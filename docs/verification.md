@@ -104,3 +104,17 @@ A separate production browser check confirmed **Select all** selects all nine vi
 The upload dialog now validates the 20 MiB limit and PDF header before submission, shows each transfer/classification phase and renders failures inside the dialog. The browser retains its upload session in memory for retries and completion is atomic on the server. Upload capabilities cannot overwrite originals. Abandoned upload cleanup remains an operational follow-up: objects must be retained until the two-hour upload capability expires, plus five minutes; there is no automatic janitor yet.
 
 Invitations also accept zero offers. The production SQL constraint allows 0–100 IDs, and private upload sessions and RPCs remain inaccessible to `anon` and `authenticated` roles. Targeted offline tests, TypeScript, ESLint and the production build passed. This is separate from the still-blocked autonomous Claude/MCP run.
+
+## Durable owner-agent access and independent bridge permissions
+
+Status: **PASS, nine production checks**, 2026-10-03 at 17:52 CST (UTC-6). Deployment: `bc7f86b`, https://puente-phi.vercel.app. `scripts/owner-agent-verify.ts --execute` used two temporary credentials, one isolated bridge and one new synthetic PDF; it sent no review mail.
+
+The deployed management API returned owner credentials once with `Cache-Control: no-store`, persisted only SHA-256 hashes and exposed no token in connection listings. The database has no expiration field for these connections, RLS is enabled, and browser roles cannot read their records. Another company's owner could not revoke them. A connection with a simulated creation date in 2000 remained valid; this verifies that age is not an authorization condition, rather than claiming a real multi-year run.
+
+An actual MCP SDK client prepared an upload, sent raw unchanged bytes to its exact private signed Storage URL without an Authorization or apikey header, and completed classification through real Claude. The result was nonsensitive `tax_compliance` with the supplied `2027-12-31` expiry. Retrying completion returned the same document; both owner and counterpart downloads matched the original SHA-256 and their Ed25519 receipts verified. A counterpart token was denied both owner upload and owner self-revocation.
+
+After `revoke_owner_access`, that credential lost access and its fresh internal download returned `403 connection_revoked`. The existing counterpart download, active bridge and second owner credential remained usable. Revoking the bridge then blocked its counterpart download while the second owner credential continued working. The JWT-authenticated interface endpoint independently revoked the second credential. Cleanup removed both credentials, the synthetic upload, isolated bridge and their traces; all 16 seeded document records remained unchanged.
+
+The production browser panel was checked through **Connect my agent**: it shows company scope and no expiration, offers a named connection and separate instructions, and opens the manual PDF upload dialog in the same company. Credential creation and revocation were exercised through the real API; no browser-created production credential was left for the user. Targeted offline tests additionally checked revocation during upload completion and internal download, token hashing, owner isolation, signed URL validation and replay behavior. TypeScript, ESLint and local/production builds passed.
+
+These checks establish the MCP transport and authorization behavior. The separate autonomous Claude/MCP run remains blocked as described above.
