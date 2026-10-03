@@ -35,6 +35,10 @@ Financial statements and tax returns, expired files with no current replacement,
 
 Approvals apply to a specific request. “Approve and create rule” is available for eligible routine documents; financial information always requires another approval on its next request. Manual responses submitted through the dashboard, signed review page or verified email reply never grant access. An offered document also remains subject to its owner's rules in the reverse direction.
 
+## Interactive walkthrough
+
+The [Spanish step-by-step guide](https://puente-phi.vercel.app/guia.html) offers 40 individual checklist instructions across six stages, saves progress in the reader’s browser and includes visual references. The standalone HTML is also available in `public/guia.html`.
+
 ## Architecture
 
 ```mermaid
