@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { admin } from "@/lib/supabase-admin";
 import { issueApprovalLinks } from "@/lib/approval";
@@ -78,17 +79,32 @@ export async function notifyRequest(
       message: "This request is no longer pending.",
     };
   const db = admin();
-  const { data: current } = await db
-    .from("requests")
-    .select("email_message_id")
-    .eq("id", request.id)
-    .single();
-  if (current?.email_message_id)
-    return {
-      status: "already_sent",
-      message: "The reviewer has already been notified.",
-    };
+  const reservation = `agentmail:reserved:${randomUUID()}`;
+  let claimed = false;
+  let attemptedSend = false;
   try {
+    const { data: current, error: lookupError } = await db
+      .from("requests")
+      .select("email_message_id,status")
+      .eq("id", request.id)
+      .single();
+    if (lookupError || !current) throw new Error("Request unavailable.");
+    if (current.status !== "pending")
+      return {
+        status: "unavailable",
+        message: "This request is no longer pending.",
+      };
+    if (current.email_message_id)
+      return String(current.email_message_id).includes(":reserved:")
+        ? {
+            status: "failed",
+            message:
+              "A notification attempt is in progress or awaits delivery reconciliation. Review is available in the owner dashboard.",
+          }
+        : {
+            status: "already_sent",
+            message: "The reviewer has already been notified.",
+          };
     const origin = appUrl();
     const [document, requester, owner] = await Promise.all([
       db
@@ -110,6 +126,23 @@ export async function notifyRequest(
     ]);
     if (!document.data || !requester.data || !owner.data)
       throw new Error("Request details unavailable.");
+    // One database claim protects concurrent callers and the provider's 24-hour replay window.
+    const { data: claimedRequest, error: claimError } = await db
+      .from("requests")
+      .update({ email_message_id: reservation })
+      .eq("id", request.id)
+      .eq("status", "pending")
+      .is("email_message_id", null)
+      .select("id")
+      .maybeSingle();
+    if (claimError) throw new Error("Notification could not be reserved.");
+    if (!claimedRequest)
+      return {
+        status: "unavailable",
+        message:
+          "Another notification attempt or owner decision is already in progress.",
+      };
+    claimed = true;
     const tokens = await issueApprovalLinks(request.id);
     const links = Object.fromEntries(
       Object.entries(tokens).map(([action, token]) => [
@@ -127,6 +160,7 @@ export async function notifyRequest(
       links,
       replyViaEmail: !!process.env.AGENTMAIL_WEBHOOK_SECRET,
     });
+    attemptedSend = true;
     const response = await fetch(
       `https://api.agentmail.to/v0/inboxes/${encodeURIComponent(inbox)}/messages/send`,
       {
@@ -134,8 +168,10 @@ export async function notifyRequest(
         headers: {
           Authorization: `Bearer ${key}`,
           "Content-Type": "application/json",
+          "Idempotency-Key": `puente-request-${request.id}`,
         },
-        body: JSON.stringify({ to: recipient.data, subject, text, html }),
+        body: JSON.stringify({ to: [recipient.data], subject, text, html }),
+        redirect: "error",
         signal: AbortSignal.timeout(15_000),
       },
     );
@@ -143,7 +179,7 @@ export async function notifyRequest(
       return {
         status: "failed",
         message:
-          "AgentMail did not accept the notification. Review is still available in the owner dashboard.",
+          "AgentMail did not confirm this notification. The attempt is reserved to prevent duplicate mail; review is available in the owner dashboard.",
       };
     const result = z
       .object({ message_id: z.string(), thread_id: z.string() })
@@ -154,7 +190,8 @@ export async function notifyRequest(
         email_thread_id: result.thread_id,
         email_message_id: result.message_id,
       })
-      .eq("id", request.id);
+      .eq("id", request.id)
+      .eq("email_message_id", reservation);
     return {
       status: "sent",
       message: error
@@ -162,6 +199,13 @@ export async function notifyRequest(
         : "Approval email sent to the configured reviewer.",
     };
   } catch {
+    // A timeout can happen after delivery. Never resend automatically after any network attempt.
+    if (claimed && !attemptedSend)
+      await db
+        .from("requests")
+        .update({ email_message_id: null })
+        .eq("id", request.id)
+        .eq("email_message_id", reservation);
     return {
       status: "failed",
       message:

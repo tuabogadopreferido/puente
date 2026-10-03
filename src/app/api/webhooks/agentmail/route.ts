@@ -2,20 +2,29 @@ import { Webhook } from "svix";
 import { z } from "zod";
 import { admin } from "@/lib/supabase-admin";
 export const runtime = "nodejs";
+const receivedMessage = z.object({
+  inbox_id: z.string(),
+  thread_id: z.string(),
+  message_id: z.string(),
+  from: z.string(),
+  labels: z.array(z.string()).optional(),
+  in_reply_to: z.string().optional(),
+  references: z.array(z.string()).optional(),
+  extracted_text: z.string().optional(),
+  text: z.string().optional(),
+});
 const received = z.object({
   event_type: z.literal("message.received"),
   event_id: z.string(),
-  message: z.object({
-    inbox_id: z.string(),
-    thread_id: z.string(),
-    message_id: z.string(),
-    from: z.string(),
-    in_reply_to: z.string().optional(),
-    references: z.array(z.string()).optional(),
-    extracted_text: z.string().optional(),
-    text: z.string().optional(),
-  }),
+  message: receivedMessage,
 });
+function unsafeLabels(labels: string[] | undefined) {
+  return (
+    labels?.some((label) =>
+      ["spam", "blocked", "unauthenticated"].includes(label.toLowerCase()),
+    ) ?? false
+  );
+}
 function emailAddress(value: string) {
   return (value.match(/<([^<>]+)>/)?.[1] || value).trim().toLowerCase();
 }
@@ -52,6 +61,7 @@ export async function POST(request: Request) {
   const message = event.data.message;
   if (
     message.inbox_id !== inbox ||
+    unsafeLabels(message.labels) ||
     emailAddress(message.from) !== reviewer.trim().toLowerCase()
   )
     return new Response(null, { status: 204 });
@@ -71,9 +81,38 @@ export async function POST(request: Request) {
   )
     return new Response(null, { status: 204 });
   // Manual replies are data, never instructions to run tools or implicitly approve access.
-  const reply = (message.extracted_text || message.text || "")
-    .trim()
-    .slice(0, 5000);
+  let content = message.extracted_text || message.text;
+  if (!content) {
+    // AgentMail omits large bodies from its 1 MB webhook; retrieve only this verified message.
+    const key = process.env.AGENTMAIL_API_KEY;
+    if (!key) return new Response(null, { status: 503 });
+    try {
+      const response = await fetch(
+        `https://api.agentmail.to/v0/inboxes/${encodeURIComponent(inbox)}/messages/${encodeURIComponent(message.message_id)}`,
+        {
+          headers: { Authorization: `Bearer ${key}` },
+          redirect: "error",
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+      if (!response.ok) return new Response(null, { status: 503 });
+      const full = receivedMessage.parse(await response.json());
+      if (
+        full.inbox_id !== inbox ||
+        full.thread_id !== message.thread_id ||
+        full.message_id !== message.message_id ||
+        emailAddress(full.from) !== reviewer.trim().toLowerCase() ||
+        unsafeLabels(full.labels) ||
+        (full.in_reply_to !== pending.email_message_id &&
+          !full.references?.includes(pending.email_message_id))
+      )
+        return new Response(null, { status: 204 });
+      content = full.extracted_text || full.text;
+    } catch {
+      return new Response(null, { status: 503 });
+    }
+  }
+  const reply = (content || "").trim().slice(0, 5000);
   if (!reply)
     return Response.json(
       { error: "Email body unavailable. Please use the manual response page." },
@@ -98,6 +137,11 @@ export async function POST(request: Request) {
     p_manual_response: reply,
   });
   // Concurrent retries cannot consume a link twice; the database transaction is authoritative.
-  if (resolutionError) return Response.json({ received: true, applied: false });
+  if (resolutionError) {
+    // Domain failures (consumed/expired/revoked) are final; transient DB failures should be retried.
+    if (!["P0001", "22023"].includes(resolutionError.code))
+      return new Response(null, { status: 503 });
+    return Response.json({ received: true, applied: false });
+  }
   return Response.json({ received: true, applied: true });
 }
