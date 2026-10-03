@@ -74,6 +74,8 @@ const documentSchema = z.object({
     sha256: z.string(),
     document_type: z.string(),
     classification_source: z.string(),
+    sensitive: z.boolean(),
+    expires_at: z.string().nullable(),
   }),
 });
 const deliverySchema = z.object({
@@ -362,7 +364,9 @@ async function main() {
   );
   must(
     completed.data.document.document_type === "tax_compliance" &&
-      completed.data.document.classification_source === "claude_anthropic",
+      completed.data.document.classification_source === "claude_anthropic" &&
+      !completed.data.document.sensitive &&
+      completed.data.document.expires_at === "2027-12-31",
     "Synthetic upload did not receive expected real Claude classification",
   );
   const retry = documentSchema.safeParse(
@@ -372,10 +376,7 @@ async function main() {
     retry.success && retry.data.document.id === uploadId,
     "MCP completion was not idempotent",
   );
-  const ownDelivery = await verifyPdf(
-    await call(primary, "get_document", { document_id: uploadId }),
-    original,
-  );
+
   pass(
     "Actual MCP prepare, raw Storage PUT, classify, complete, replay and original download passed",
   );
@@ -383,14 +384,12 @@ async function main() {
   bridgeAttempted = true;
   must(
     !(
-      await db
-        .from("bridges")
-        .insert({
-          id: bridgeId,
-          company_a_id: acme,
-          company_b_id: globex,
-          expires_at: new Date(Date.now() + 24 * 3_600_000).toISOString(),
-        })
+      await db.from("bridges").insert({
+        id: bridgeId,
+        company_a_id: acme,
+        company_b_id: globex,
+        expires_at: new Date(Date.now() + 24 * 3_600_000).toISOString(),
+      })
     ).error,
     "Temporary independent bridge failed",
   );
@@ -436,6 +435,10 @@ async function main() {
   });
   must(external.ok, "Independent bridge request failed");
   const externalDelivery = await verifyPdf(external.data, original);
+  const ownDelivery = await verifyPdf(
+    await call(primary, "get_document", { document_id: uploadId }),
+    original,
+  );
   await call(primary, "revoke_owner_access");
   await call(primary, "list_documents", {}, true);
   await call(primary, "complete_document_upload", { uploadId }, true);
@@ -443,7 +446,10 @@ async function main() {
     redirect: "error",
   });
   must(
-    [401, 403].includes(ownBlocked.status),
+    ownBlocked.status === 403 &&
+      z
+        .object({ code: z.literal("connection_revoked") })
+        .safeParse(await ownBlocked.json()).success,
     "Revoked owner connection retained its internal download",
   );
   const externalStillWorks = await fetch(externalDelivery.download_url, {
@@ -597,11 +603,6 @@ async function cleanup() {
       "Owner audit cleanup failed",
     );
     must(
-      !(await db.from("document_upload_sessions").delete().eq("id", session.id))
-        .error,
-      "Upload session cleanup failed",
-    );
-    must(
       !(
         await db
           .from("documents")
@@ -615,6 +616,11 @@ async function cleanup() {
       !(await db.storage.from("documents").remove([session.storage_path]))
         .error,
       "Original cleanup failed",
+    );
+    must(
+      !(await db.from("document_upload_sessions").delete().eq("id", session.id))
+        .error,
+      "Upload session cleanup failed",
     );
   }
   if (seedBaseline)

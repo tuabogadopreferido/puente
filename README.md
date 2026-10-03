@@ -4,7 +4,7 @@
 
 [Live demo](https://puente-phi.vercel.app) · [MCP endpoint](https://puente-phi.vercel.app/api/mcp) · [Agent guide](https://puente-phi.vercel.app/llms.txt) · [OpenAPI](https://puente-phi.vercel.app/api/openapi)
 
-Companies repeatedly send the same vendor onboarding documents by email. Puente keeps each corporate dossier private and lets agents request original PDFs through a bilateral permission called a **bridge**. Every request declares its purpose and offers the requesting company's own documents. Owner rules approve routine requests; exceptions go to a human.
+Companies repeatedly send the same vendor onboarding documents by email. Puente keeps each corporate dossier private and lets agents request original PDFs through a bilateral permission called a **bridge**. Every counterparty request declares its purpose; offering the requesting company's own documents is optional. Owner rules approve routine requests; exceptions go to a human.
 
 Built for the Supabase Select 2026 Hackathon. Mexico is the first market; the API and MCP are model-agnostic. All demo companies, people, tax identifiers and documents are fictional.
 
@@ -20,7 +20,7 @@ You will sign in at the live demo with either fictional company:
 These are deliberately public test accounts. You will use synthetic files only.
 
 1. In **Bridges**, you will issue a one-time code for Globex on the Acme–Globex bridge.
-2. In **Agent playground**, you will exchange that code, select the SAT compliance opinion and the purpose **Alta como proveedor**, and offer Globex documents.
+2. In **Agent playground**, you will exchange that code, select the SAT compliance opinion and the purpose **Alta como proveedor**. You may leave offers empty or choose Globex documents to offer.
 3. The agent will receive the **unchanged original PDF**, extracted text and an **Ed25519-signed receipt** binding the SHA-256, recipient, bridge, purpose and delivery time.
 4. You will request the balance sheet to create a human review. From **Requests**, the owner will approve it; polling will then deliver the original. Production AgentMail also sends the owner a review email with three signed decision links.
 5. In **Activity**, the owner will see the access through Supabase Realtime. Revoking the bridge will block the next API/MCP call and any previously issued download link.
@@ -104,15 +104,53 @@ A Streamable HTTP MCP client will use:
 
 The agent will call `exchange_code` with a code issued by the owner, then `list_documents` and `get_document` (or `request_document`). The returned token will travel in the `Authorization: Bearer` header or the tool's `token` argument. `get_request_status` checks a pending human decision. `verify_receipt` validates an Ed25519 receipt against this server's public key.
 
-### Owner agents
+### Connect your company's agent
 
-An internal owner agent will authenticate with Supabase Auth, for example through `supabase.auth.signInWithPassword({ email, password })`, and use the returned **access token** in the MCP Authorization header. The Puente server verifies that token with Supabase Auth and resolves company membership from the database. The agent will never supply its own company or ownership claims.
+You will open **Connect my agent** from the dashboard's Developer navigation or Document vault, enter an **Agent name**, and select **Create agent access**. **Copy MCP configuration** will copy the new private credential into configuration for a Streamable HTTP client that supports custom Authorization headers. You will copy **Copy agent instructions** separately; those instructions contain no credential.
 
-The same `list_documents`, `get_document`, `request_document` and `get_request_status` tools recognize the token's scope. An owner sees its own dossier and can retrieve its original PDFs with owner-scoped signed receipts. A bridge token requests from the other company and must satisfy purpose and review rules. Reciprocal offers are optional and remain empty when omitted; any offered IDs must belong to the requester.
+The owner credential has a `po_` prefix and **no scheduled expiration**. The server will store only its SHA-256 hash and recheck active owner membership on each action. The raw token will be returned only when created and kept in the panel's memory until it closes or you sign out. You will keep the copied configuration private; if you lose it, you will create new access and revoke the old connection.
 
-Owner-only MCP tools are `create_bridge`, `issue_access_code`, `revoke_bridge`, `list_requests` and `decide_request`. A bridge token cannot call these tools. Owner originals use a separate short-lived download ticket that rechecks the owner's active membership and expiry.
+The copied configuration will follow this shape; the value below is a placeholder:
 
-For REST administration, an owner will use the Supabase Auth token with `GET /api/dashboard`, `GET /api/owner/documents`, `POST /api/owner/documents/{id}/download`, `POST /api/documents/upload` (multipart `file`), `PATCH /api/documents/{id}`, `POST /api/bridges`, the bridge code/revoke routes, and `POST /api/requests/{id}/decision`. The [OpenAPI document](https://puente-phi.vercel.app/api/openapi) describes their bodies.
+```json
+{
+  "mcpServers": {
+    "puente_owner": {
+      "type": "http",
+      "url": "https://puente-phi.vercel.app/api/mcp",
+      "headers": { "Authorization": "Bearer OWNER_AGENT_TOKEN" }
+    }
+  }
+}
+```
+
+The connection's creator will revoke it under **Connect my agent** by selecting **Revoke access** and confirming **Revoke access now**. The connected agent can revoke its own credential with `revoke_owner_access`. Revoking this owner connection will block its future calls and the internal download tickets issued to it. Existing bridges, counterparty tokens and counterparty download permissions will remain unchanged.
+
+A Supabase Auth access JWT remains supported for legacy owner MCP clients, with its normal session expiry. Durable owner credentials are the preferred agent connection. The same `list_documents`, `get_document`, `request_document` and `get_request_status` tools will recognize the verified scope: owners will operate on their own company; counterparty bridge tokens will operate through a bilateral bridge. Offers will remain empty when omitted, and any offered IDs must belong to the requester.
+
+Owner-only tools include `prepare_document_upload`, `complete_document_upload`, `create_bridge`, `issue_access_code`, `revoke_bridge`, `list_requests` and `decide_request`. Only a durable owner credential can call `revoke_owner_access`. Counterparty bridge tokens cannot call owner-only tools.
+
+### Upload as the company owner
+
+The dashboard's **Upload document** button will add originals to your own company's vault. Your company agent will use the following MCP sequence for a PDF up to 20 MiB (20,971,520 bytes) and 80 pages:
+
+1. It will call `prepare_document_upload({filename, size})`, with the exact original byte count. The server will select the company and private object path and return `uploadId`, `upload_url`, `method`, `content_type`, `headers` and instructions.
+2. The agent will send the unchanged PDF as the raw binary body of a `PUT` to that returned signed URL, using the returned headers. The signed URL supplies upload authorization; it needs no `Authorization` or `apikey` header. PDF bytes and base64 will never be sent to MCP or JSON application routes.
+3. It will call `complete_document_upload({uploadId})` with the same owner credential and read `{document, notice}`. An owner-review notice will be presented as such. After an uncertain upload or completion response, it will retry completion with the same `uploadId`; completed sessions will return the same document.
+
+### Browser REST administration
+
+The browser will use its **Supabase Auth JWT** for REST owner routes, including the following connection-management endpoints. A durable `po_` credential will be used with MCP, not substituted for the browser JWT on these routes.
+
+| Method and path | Result |
+| --- | --- |
+| `GET /api/owner/agent-connections` | Creator's connection metadata: `id`, `label`, `created_at`, `revoked_at`; no token |
+| `POST /api/owner/agent-connections` with `{label}` | New `{connection, token}`; raw token returned only once |
+| `POST /api/owner/agent-connections/{id}/revoke` | Revocation of the creator's specific connection |
+
+Browser uploads will use `POST /api/documents/upload/init` with `{filename,size}`, send the original directly through Supabase `uploadToSignedUrl(path, token, file, {contentType: 'application/pdf', upsert: false})`, and call `POST /api/documents/upload/complete` with `{uploadId}`. Both application calls will use the same owner JWT. The legacy multipart `/api/documents/upload` route accepts at most 4 MiB.
+
+Other owner REST routes include `GET /api/dashboard`, `GET /api/owner/documents`, `POST /api/owner/documents/{id}/download`, classification corrections, bridge administration, owner decisions and invitations. The [OpenAPI document](https://puente-phi.vercel.app/api/openapi) describes their bodies and authentication.
 
 ### Invite another company
 
@@ -185,7 +223,8 @@ The actual MCP SDK client separately passed all seven core integration groups. A
 ## Security boundaries
 
 - Every public-schema table has RLS. Anonymous clients have no table access; browser users have tenant-scoped reads and no direct writes.
-- Agent credentials are high-entropy, hashed at rest and scoped to a company and bridge. One-time codes expire in 15 minutes; tokens last up to 24 hours and never outlive their bridge.
+- Durable owner credentials are high-entropy, hashed at rest and scoped to their creator and company, with no scheduled expiration. Revocation blocks that connection and its internal owner-download tickets; active owner membership is rechecked.
+- Counterparty credentials are separately scoped to a company and bridge. One-time codes expire in 15 minutes; bridge tokens last up to 24 hours and never outlive their bridge. Original-download tickets last up to 60 seconds and recheck their own scope. Owner-connection revocation does not revoke bridges or counterparty download tickets.
 - Original files are in a private bucket and are never watermarked, rewritten or replaced by extracted text.
 - Receipt verification accepts caller-supplied data; it does not publish a private document registry. PDF content is untrusted data, not agent instructions.
 - Secrets live in ignored environment files and encrypted server variables. Public test credentials belong only to the synthetic demo.

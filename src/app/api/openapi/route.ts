@@ -1,5 +1,17 @@
 type Schema = Record<string, unknown>;
 const uuid: Schema = { type: "string", format: "uuid" };
+const ownerConnection = {
+  type: "object",
+  required: ["id", "label", "created_at", "revoked_at"],
+  properties: {
+    id: uuid,
+    label: { type: "string", minLength: 1, maxLength: 120 },
+    created_at: { type: "string", format: "date-time" },
+    revoked_at: { type: ["string", "null"], format: "date-time" },
+  },
+  description:
+    "Creator-scoped owner connection metadata. No expiry or recoverable raw token.",
+};
 const tokenSecurity = [{ bearerAuth: [] }];
 const ownerSecurity = [{ ownerAuth: [] }];
 const jsonBody = (schema: Schema) => ({
@@ -130,6 +142,150 @@ export async function GET() {
         responses: { "200": pdfResponse, ...errors },
       },
     },
+    "/api/mcp": {
+      post: {
+        summary: "Streamable HTTP MCP for owner agents and counterparties",
+        description:
+          "The preferred owner credential is a durable po_ bearer created through Connect my agent. It has no scheduled expiry, is stored hashed and is bound to its creator/company. Legacy owner Supabase JWTs remain supported with their normal expiry. Counterparty bridge tokens last up to 24 hours. Initialization, discovery and exchange_code can start without a bearer; protected tools will verify a bearer header or their token argument. Owner agents will call prepare_document_upload({filename,size}), PUT raw unchanged PDF bytes to its returned upload_url with the returned headers and no Authorization/apikey, then call complete_document_upload({uploadId}). No base64 or PDF bodies will be sent to MCP. revoke_owner_access will revoke only the durable credential used for that call and its internal owner-download tickets; bridges and counterparty download permissions remain unchanged.",
+        security: [
+          {},
+          { ownerAgentAuth: [] },
+          { ownerAuth: [] },
+          { bearerAuth: [] },
+        ],
+        requestBody: jsonBody(
+          object(
+            {
+              jsonrpc: { type: "string", const: "2.0" },
+              method: { type: "string" },
+              id: { type: ["string", "number"] },
+              params: { type: "object", additionalProperties: true },
+            },
+            ["jsonrpc", "method"],
+          ),
+        ),
+        responses: {
+          "200": {
+            description:
+              "MCP JSON-RPC response or event stream. Protected tool outcomes depend on the verified credential scope.",
+            content: {
+              "application/json": {
+                schema: { type: "object", additionalProperties: true },
+              },
+              "text/event-stream": { schema: { type: "string" } },
+            },
+          },
+          "202": { description: "MCP notification accepted" },
+          ...errors,
+        },
+      },
+    },
+    "/api/owner/agent-connections": {
+      get: {
+        ...op(
+          "List durable owner connections created by the signed-in user",
+          undefined,
+          true,
+        ),
+        description:
+          "Requires the creator's Supabase Auth JWT and active owner membership. A durable po_ token is not accepted on this browser administration route. Raw tokens will never be returned by listing.",
+        responses: {
+          "200": {
+            description: "Connection metadata only",
+            content: {
+              "application/json": {
+                schema: object(
+                  { connections: { type: "array", items: ownerConnection } },
+                  ["connections"],
+                ),
+              },
+            },
+          },
+          "503": { description: "Connection service unavailable" },
+          ...errors,
+        },
+      },
+      post: {
+        ...op(
+          "Create a durable owner-agent credential with no scheduled expiration",
+          {
+            ...object(
+              {
+                label: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: 120,
+                  description:
+                    "Agent name; leading and trailing whitespace will be removed.",
+                },
+              },
+              ["label"],
+            ),
+            additionalProperties: false,
+          },
+          true,
+        ),
+        description:
+          "The creator will authenticate with a Supabase Auth JWT, then receive the po_ token once. The server will store only its SHA-256 hash and verify active owner membership on every agent action. The token grants owner administration of the creator's company. Copy MCP configuration in Connect my agent will place it in the MCP Authorization header. Existing tokens cannot be retrieved; lost access will require a new connection and revocation of the old one.",
+        responses: {
+          "201": {
+            description:
+              "New metadata and one-time disclosure of the private owner token",
+            content: {
+              "application/json": {
+                schema: object(
+                  {
+                    connection: ownerConnection,
+                    token: {
+                      type: "string",
+                      pattern: "^po_[A-Za-z0-9_-]{43}$",
+                      description:
+                        "Private owner credential; returned only once. Keep it out of URLs, logs and public files.",
+                    },
+                  },
+                  ["connection", "token"],
+                ),
+              },
+            },
+          },
+          "503": {
+            description:
+              "Creation unavailable or outcome unconfirmed; refresh the list before retrying",
+          },
+          ...errors,
+        },
+      },
+    },
+    "/api/owner/agent-connections/{id}/revoke": {
+      parameters: idParameter,
+      post: {
+        ...op(
+          "Revoke one durable owner connection created by the signed-in user",
+          undefined,
+          true,
+        ),
+        description:
+          "Requires the creator's Supabase Auth JWT and the same active owner-company membership. Repeated revocation is idempotent. It blocks this owner credential and internal owner-download tickets issued to it, without revoking bridges, counterparty credentials or counterparty download permissions. The connected owner agent will instead use MCP revoke_owner_access to revoke itself.",
+        responses: {
+          "200": {
+            description: "The specified owner connection is revoked",
+            content: {
+              "application/json": {
+                schema: object(
+                  {
+                    status: { type: "string", const: "revoked" },
+                    connection_id: uuid,
+                  },
+                  ["status", "connection_id"],
+                ),
+              },
+            },
+          },
+          "503": { description: "Revocation could not be confirmed" },
+          ...errors,
+        },
+      },
+    },
     "/api/dashboard": {
       get: op(
         "Read the authenticated owner company dashboard",
@@ -149,7 +305,7 @@ export async function GET() {
       ),
       get: {
         summary:
-          "Download the owner original; rechecks active membership and expiry",
+          "Download the owner original; rechecks ticket expiry, owner membership and originating owner connection",
         security: [],
         parameters: [ticketParameter],
         responses: { "200": pdfResponse, ...errors },
@@ -209,7 +365,7 @@ export async function GET() {
           true,
         ),
         description:
-          "Send metadata only, never PDF bytes through this route. The server binds the upload to the verified owner and a random private Storage path. Use Supabase storage.from('documents').uploadToSignedUrl(path, token, file, { contentType: 'application/pdf', upsert: false }), then call upload/complete. The upload capability is private, valid for two hours and cannot overwrite an existing object. PDF validity, exact byte count, at most 80 pages and SHA-256 are verified during completion.",
+          "Browser REST route: requires a Supabase Auth JWT, not a durable po_ credential. MCP owner agents will use prepare_document_upload and complete_document_upload instead. Send metadata only, never PDF bytes through this route. The server binds the upload to the verified owner and a random private Storage path. Use Supabase storage.from('documents').uploadToSignedUrl(path, token, file, { contentType: 'application/pdf', upsert: false }), then call upload/complete. The upload capability is private, valid for two hours and cannot overwrite an existing object. PDF validity, exact byte count, at most 80 pages and SHA-256 are verified during completion.",
         responses: {
           "201": {
             description:
@@ -248,7 +404,7 @@ export async function GET() {
           true,
         ),
         description:
-          "The same verified owner finalizes the upload session. Server-read original bytes must match the declared size and a valid unencrypted PDF up to 20 MiB and 80 pages. The server computes SHA-256 and classifies by content without modifying or reuploading the original. Missing or unavailable classification remains awaiting_owner_review. Retry completion with the same uploadId after an uncertain Storage upload or completion response; completed sessions return the same document. Concurrent processing returns 409 and does not start duplicate classification.",
+          "The same verified owner Supabase Auth JWT will finalize this browser REST upload session; a durable po_ credential will instead use MCP complete_document_upload.  Server-read original bytes must match the declared size and a valid unencrypted PDF up to 20 MiB and 80 pages. The server computes SHA-256 and classifies by content without modifying or reuploading the original. Missing or unavailable classification remains awaiting_owner_review. Retry completion with the same uploadId after an uncertain Storage upload or completion response; completed sessions return the same document. Concurrent processing returns 409 and does not start duplicate classification.",
         responses: {
           "200": {
             description:
@@ -481,9 +637,9 @@ export async function GET() {
     openapi: "3.1.0",
     info: {
       title: "Puente API",
-      version: "1.1.0",
+      version: "1.2.0",
       description:
-        "Bilateral access to private corporate originals. Owner Auth JWTs are verified by Supabase Auth; membership comes from the database, never caller-provided claims. All demo data is fictional.",
+        "Private corporate originals with separate authorization scopes. Browser owner REST administration requires a verified Supabase Auth JWT. MCP accepts durable owner po_ credentials (preferred, no scheduled expiry), legacy owner JWTs or 24-hour counterparty bridge tokens. Active ownership comes from the database. Download tickets last up to 60 seconds and recheck their own scope; revoking an owner connection does not revoke a bridge. All demo data is fictional.",
     },
     servers: [
       {
@@ -500,12 +656,19 @@ export async function GET() {
           description:
             "Counterparty token returned by one-time bridge-code exchange; scoped to a company and bridge, up to 24 hours.",
         },
+        ownerAgentAuth: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "po_ opaque owner credential",
+          description:
+            "MCP owner access only. Created explicitly through Connect my agent and returned once; stored hashed, scoped to creator/company and valid without scheduled expiry while owner membership remains active. The creator can revoke it through JWT-authenticated management, or the agent can call revoke_owner_access. It is not a counterparty bridge credential or a replacement for browser REST JWT authentication.",
+        },
         ownerAuth: {
           type: "http",
           scheme: "bearer",
           bearerFormat: "JWT",
           description:
-            "Access token returned by Supabase Auth sign-in. The server verifies it and resolves company_members; never send a service-role key or self-declared company claims.",
+            "Browser REST access token returned by Supabase Auth sign-in, including connection-management and upload routes. Also supported as a legacy owner MCP credential with normal session expiry. The server verifies it and resolves company_members; never substitute a po_ token on JWT-only REST routes or send a service-role key.",
         },
         inviteeAuth: {
           type: "http",
