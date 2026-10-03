@@ -49,6 +49,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
+import { normalizeSensitivity } from "@/lib/document-policy";
 
 type Company = {
   id: string;
@@ -884,7 +885,9 @@ export default function Home() {
   function openDocument(doc: Document) {
     setSelectedDoc(doc);
     setCorrectionType(doc.document_type);
-    setCorrectionSensitive(sensitive(doc));
+    setCorrectionSensitive(
+      normalizeSensitivity(doc.document_type, sensitive(doc)),
+    );
     setCorrectionExpiry(doc.expires_at?.slice(0, 10) || "");
   }
   async function copy(text: string) {
@@ -2207,7 +2210,13 @@ export default function Home() {
             Document type
             <select
               value={correctionType}
-              onChange={(e) => setCorrectionType(e.target.value)}
+              onChange={(e) => {
+                const documentType = e.target.value;
+                setCorrectionType(documentType);
+                setCorrectionSensitive(
+                  normalizeSensitivity(documentType, correctionSensitive),
+                );
+              }}
             >
               {Object.entries(docTypes).map(([key, name]) => (
                 <option value={key} key={key}>
@@ -2231,11 +2240,18 @@ export default function Home() {
             <input
               type="checkbox"
               checked={correctionSensitive}
+              disabled={correctionType !== "other"}
               onChange={(e) => setCorrectionSensitive(e.target.checked)}
             />
             <span>
               <strong>Sensitive financial document</strong>
-              <small>Every request will require human approval.</small>
+              <small>
+                {correctionType === "other"
+                  ? "You can require approval for every request."
+                  : correctionSensitive
+                    ? "Financial documents require approval for every request."
+                    : "Onboarding documents follow your permission policies."}
+              </small>
             </span>
           </label>
           {selectedDoc.classification_reason && (
