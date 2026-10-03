@@ -116,6 +116,8 @@ An owner can invite a company from **Bridges**, selecting a closed-list purpose 
 
 The recipient opens `/invite`, signs up or signs in with the invited email, and confirms that mailbox through Supabase Auth. Acceptance creates a company and default purposes if needed, then a bilateral bridge. It does not release documents or create sharing rules. The API exposes only invitation metadata before acceptance, and repeated acceptance by the same verified user is idempotent.
 
+**Current deployment limit:** Supabase email confirmation remains enabled, but custom Auth SMTP is not configured. The default sender only permits project-team addresses, so a new external recipient cannot complete email signup until Auth SMTP is configured. Existing confirmed demo accounts can exercise invitation acceptance. The signed invitation flow and verified-user acceptance were tested; delivery and confirmation for a new external mailbox remain unverified. See [Supabase Auth SMTP requirements](https://supabase.com/docs/guides/auth/auth-smtp).
+
 REST uses the same decision core:
 
 ```bash
@@ -137,6 +139,18 @@ You will configure `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID` and `PUENTE_REVIEW_
 
 For inbound replies, you will register `/api/webhooks/agentmail` for `message.received` and set `AGENTMAIL_WEBHOOK_SECRET`. Svix signatures, timestamps, the configured sender and the original email thread are checked. Dashboard review remains available when email is not configured.
 
+For an operator-run SMTP demo, `scripts/demo-email.ts` prepares one existing pending request between the fictional Acme and Globex companies. Set `PUENTE_REVIEW_EMAIL`, `PUENTE_SMTP_HELPER` to the absolute path of your external compatible Gmail helper, and `NEXT_PUBLIC_APP_URL` to the deployed HTTPS origin. The external helper loads its own credentials; those credentials do not belong in this repository or Vercel.
+
+```bash
+# Validate and render only; sends no email and writes no approval tokens:
+node --env-file=.env.local --import tsx scripts/demo-email.ts --request REQUEST_UUID
+# Explicitly send once to the configured reviewer:
+node --env-file=.env.local --import tsx scripts/demo-email.ts --request REQUEST_UUID --send
+```
+
+This optional local transport is not part of a fresh clone's dependencies. It requires a helper exposing `load_env()` and `send_via_smtp(...)`; the script's `--help` lists its settings. It refuses to run on Vercel. Its three signed buttons open the production approval pages, and manual responses use that page. SMTP replies are not processed. An uncertain send remains reserved to prevent duplicate email. This fallback does not configure Supabase Auth signup mail.
+
+
 ## Verification
 
 ```bash
@@ -147,6 +161,8 @@ npm run test:database
 npm run test:api
 # Authenticated Realtime delivery and cross-company isolation:
 node --env-file=.env.local --import tsx scripts/realtime-verify.ts
+# Classification policy, strict date/UUID validation and owner scope:
+node --env-file=.env.local --import tsx scripts/document-policy-verify.ts
 ```
 
 The database tests verify tenant isolation, private Storage, exact hashes for the 16 seeded PDFs, service-only RPCs, atomic code redemption, approval replay protection and revoked bridges. Additional legitimate uploads and companies do not invalidate the fixture checks. HTTP/MCP tests exercise an actual SDK client, receipts and tamper rejection, human decisions, reciprocal offers, invalid purposes, expiry, injection-shaped IDs and immediate download revocation.

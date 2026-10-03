@@ -1,0 +1,13 @@
+{
+  "base": "https://puente-phi.vercel.app",
+  "viewport": {
+    "width": 1440,
+    "height": 1050
+  },
+  "login": true,
+  "liveDashboard": true,
+  "liveStandardDelivery": true,
+  "mobileNoOverflow": true,
+  "pageErrors": [],
+  "bridgeId": "77f46bda-7f1f-42df-8c57-12467e0e75b5"
+}
