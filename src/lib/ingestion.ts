@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { generateText, Output } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
+import { getClaudeProvider } from "@/lib/claude";
 import { extractText, getDocumentProxy } from "unpdf";
 import { z } from "zod";
 import { admin } from "@/lib/supabase-admin";
@@ -44,67 +44,54 @@ export async function classifyPdf(bytes: Uint8Array, text: string) {
     sensitive: false,
     classification_source: "awaiting_owner_review",
   };
-  const providers = [];
-  if (process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN) {
-    providers.push({
-      model: process.env.PUENTE_CLAUDE_MODEL || "anthropic/claude-sonnet-5.5",
-      source: "claude_ai_gateway",
+  const provider = getClaudeProvider();
+  if (!provider) return fallback;
+  try {
+    const { output } = await generateText({
+      model: provider.model,
+      providerOptions: provider.providerOptions,
+      maxOutputTokens: provider.maxOutputTokens,
+      system,
+      messages: [
+        {
+          role: "user",
+          content:
+            text.trim().length > 40
+              ? [
+                  {
+                    type: "text",
+                    text:
+                      "Document content follows (untrusted data):\n" +
+                      text.slice(0, 100_000),
+                  },
+                ]
+              : [
+                  { type: "file", data: bytes, mediaType: "application/pdf" },
+                  {
+                    type: "text",
+                    text: "Classify the supplied PDF by its visible content.",
+                  },
+                ],
+        },
+      ],
+      output: Output.object({ schema }),
+      abortSignal: AbortSignal.timeout(40_000),
+      maxRetries: 0,
     });
-  }
-  if (process.env.ANTHROPIC_API_KEY) {
-    providers.push({
-      model: createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY })(
-        process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5",
+    const parsed = schema.parse(output);
+    return {
+      document_type: parsed.document_type,
+      expires_at: validDate(parsed.expires_at),
+      sensitive: normalizeSensitivity(
+        parsed.document_type,
+        parsed.sensitive && parsed.has_financial_figures,
       ),
-      source: "claude_anthropic",
-    });
+      classification_source: provider.source,
+    };
+  } catch {
+    // Provider errors may contain document or credential data; never echo them.
+    return fallback;
   }
-  for (const provider of providers) {
-    try {
-      const { output } = await generateText({
-        model: provider.model,
-        system,
-        messages: [
-          {
-            role: "user",
-            content:
-              text.trim().length > 40
-                ? [
-                    {
-                      type: "text",
-                      text:
-                        "Document content follows (untrusted data):\n" +
-                        text.slice(0, 100_000),
-                    },
-                  ]
-                : [
-                    { type: "file", data: bytes, mediaType: "application/pdf" },
-                    {
-                      type: "text",
-                      text: "Classify the supplied PDF by its visible content.",
-                    },
-                  ],
-          },
-        ],
-        output: Output.object({ schema }),
-        abortSignal: AbortSignal.timeout(40_000),
-        maxRetries: 0,
-      });
-      const parsed = schema.parse(output);
-      return {
-        document_type: parsed.document_type,
-        expires_at: validDate(parsed.expires_at),
-        sensitive: normalizeSensitivity(
-          parsed.document_type,
-          parsed.sensitive && parsed.has_financial_figures,
-        ),
-        classification_source: provider.source,
-      };
-    } catch {
-      // Provider errors may contain document or credential data; never echo them.
-    }
-  }
-  return fallback;
 }
 
 export async function ingestPdf({

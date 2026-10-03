@@ -49,11 +49,11 @@ flowchart LR
   Core --> Storage[Private Supabase Storage]
   DB --> Realtime[Supabase Realtime]
   Realtime --> UI
-  Core --> Claude[Claude via AI Gateway]
+  Core --> Claude[Claude Opus 5.5 via Anthropic]
   Core --> Mail[AgentMail owner review]
 ```
 
-Supabase provides the database, owner authentication, tenant row isolation, private originals, atomic single-use credential redemption and Realtime events. Vercel hosts Next.js and the MCP/REST endpoints; AI Gateway routes Claude classification. AgentMail handles outbound review and signed inbound webhooks.
+Supabase provides the database, owner authentication, tenant row isolation, private originals, atomic single-use credential redemption and Realtime events. Vercel hosts Next.js and the MCP/REST endpoints; The AI SDK calls Anthropic directly for Claude classification, with AI Gateway available when no direct key is configured. AgentMail handles outbound review and signed inbound webhooks.
 
 See [database contract](docs/schema.md) and [verification](docs/verification.md).
 
@@ -84,7 +84,7 @@ npm run dev
 
 Seeding creates two test Auth users, 16 PDFs, eight privacy purposes, 14 bilateral rules and one bridge. It is a demo fixture reset, including bridge status; never run it against a client database. Seeded documents are honestly labeled owner-verified until actual Claude classification is run.
 
-For Claude, you will use Vercel's deployment OIDC or set `AI_GATEWAY_API_KEY`. A direct `ANTHROPIC_API_KEY` can serve as fallback. If no accessible model is configured, originals are retained with **awaiting owner review**; the app never claims AI classification succeeded.
+For Claude, set `ANTHROPIC_API_KEY` and, for a personal key, `ANTHROPIC_WORKSPACE_ID`. Direct Anthropic takes priority over Gateway/OIDC and defaults to `claude-opus-5-5` with `effort: low`. Set `ANTHROPIC_MODEL` to override the direct model. Without a direct key, Vercel's deployment OIDC or `AI_GATEWAY_API_KEY` selects Gateway with `PUENTE_CLAUDE_MODEL` (default `anthropic/claude-opus-5.5`). If no accessible model is configured, originals are retained with **awaiting owner review**; the app never claims AI classification succeeded.
 
 ## Connect an agent
 
