@@ -9,7 +9,10 @@
     "lint": "eslint",
     "seed": "node --env-file=.env.local --import tsx scripts/seed.ts",
     "test:database": "node --env-file=.env.local --import tsx scripts/seed-verify.ts",
-    "test:api": "node --env-file=.env.local --import tsx scripts/api-verify.ts"
+    "test:api": "node --env-file=.env.local --import tsx scripts/api-verify.ts",
+    "test:realtime": "node --env-file=.env.local --import tsx scripts/realtime-verify.ts",
+    "test:claude": "node --import tsx scripts/claude-mcp-verify.ts",
+    "demo:email": "node --env-file=.env.local --import tsx scripts/demo-email.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.71",
