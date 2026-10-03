@@ -12,6 +12,8 @@ const admin = createClient(url, secret, options);
 const acme = '11111111-1111-4111-8111-111111111111';
 const globex = '22222222-2222-4222-8222-222222222222';
 const bridge = randomUUID();
+const fixtureIds = (companyIndex: number) => Array.from({ length: 8 }, (_, i) => `dddd0000-${String(companyIndex + 1).padStart(4, '0')}-4000-8000-${String(i + 1).padStart(12, '0')}`);
+const allFixtureIds = [...fixtureIds(0), ...fixtureIds(1)];
 const digest = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
 const randomHash = () => digest(randomBytes(32));
 const passed: string[] = [];
@@ -26,14 +28,15 @@ async function main() {
     requireSuccess((await client.auth.signInWithPassword({email,password})).error);
     const {data, error} = await client.from('documents').select('id,company_id');
     requireSuccess(error);
-    assert.equal(data?.length,8);
+    const expected = fixtureIds(company === acme ? 0 : 1);
+    assert(expected.every(id => data?.some(d => d.id === id)), 'Every seeded company document must be visible');
     assert(data?.every(d => d.company_id === company));
     assert((await client.from('agent_tokens').select('*')).error, 'Token table must be inaccessible');
     assert((await client.from('documents').update({title:'FORBIDDEN'}).eq('id',randomUUID())).error, 'Browser update must fail');
     assert((await client.rpc('redeem_access_code',{p_code_hash:randomHash(),p_token_hash:randomHash()})).error, 'Browser RPC call must fail');
     record(`${email}: own-company RLS, no secrets, no writes, no privileged RPC`);
   }
-  const {data: docs,error: docsError} = await admin.from('documents').select('*');
+  const {data: docs,error: docsError} = await admin.from('documents').select('*').in('id', allFixtureIds);
   requireSuccess(docsError);
   assert.equal(docs?.length,16);
   for (const doc of docs!) {
@@ -41,7 +44,7 @@ async function main() {
     requireSuccess(downloaded.error);
     assert.equal(digest(new Uint8Array(await downloaded.data!.arrayBuffer())),doc.sha256);
   }
-  record('All 16 private PDF originals match stored SHA-256');
+  record('All 16 seeded private PDF originals match stored SHA-256');
   const sample = docs![0];
   const publicUrl = admin.storage.from('documents').getPublicUrl(sample.storage_path).data.publicUrl;
   assert(!(await fetch(publicUrl)).ok, 'Public Storage URL must fail');

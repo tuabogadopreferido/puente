@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "seed": "node --env-file=.env.local --import tsx scripts/seed.ts",
+    "test:database": "node --env-file=.env.local --import tsx scripts/seed-verify.ts",
+    "test:api": "node --env-file=.env.local --import tsx scripts/api-verify.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.71",
@@ -33,6 +36,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",
+    "prettier": "3.9.9",
     "tailwindcss": "^4",
     "tsx": "4.23.15",
     "typescript": "^5"
