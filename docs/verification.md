@@ -91,3 +91,16 @@ All three decision links were consumed, and attempts to reuse any action were re
 The verified deployment is available at [puente-phi.vercel.app](https://puente-phi.vercel.app). This resolves the earlier AgentMail permission blocker; the Claude-driven MCP provider refusal remains unresolved. Supabase Auth signup email still requires its separate SMTP configuration.
 
 This verifier is opt-in: review its source and obtain authorization for one notification and one reply before running it. The external helper retains Gmail credentials locally. Logs omit live links, credentials and reply content. The script attempts revocation and removal of correlated temporary records in `finally`; cleanup passed in the reported run. If bridge creation was attempted without a confirmed ID, it reports the creation and cleanup outcomes as unknown and requires inspection before another run. It does not search for or delete uncorrelated rows.
+
+
+## Large PDFs, multiple requests and optional offers
+
+Status: **PASS** in production on 2026-10-03 17:20 CST (UTC-6). Deployed source commits: `c30a2c5` and `88c075b`.
+
+The opt-in `scripts/large-pdf-verify.ts --execute` passed eleven checks using a generated PDF of slightly more than 16 MiB. It tested initialization authorization and the 20 MiB limit; private owner-bound upload sessions; direct signed upload into the private bucket; concurrent completion and idempotent replay; real Claude classification as `tax_compliance`; original-byte SHA-256 and signed receipts through both owner and counterparty streaming downloads; rejection of forged PDF content; already-issued download denial after bridge revocation; omitted and empty offers; and rejection of another company's offered document. Cleanup removed this script's sessions, objects, document rows, bridge and traces. All sixteen seeded records were unchanged. No actual user PDF was read, uploaded or classified for this test. No review email was sent.
+
+A separate production browser check confirmed **Select all** selects all nine visible documents and **Clear all** resets the selection. A two-document request for the seeded tax registration and SAT compliance samples returned two independent delivered results with all return-offer checkboxes empty. Those two deliberate UI test requests remain visible in the existing demo bridge's audit history. The browser test did not request the user's additional PDF, the financial document or the expired document.
+
+The upload dialog now validates the 20 MiB limit and PDF header before submission, shows each transfer/classification phase and renders failures inside the dialog. The browser retains its upload session in memory for retries and completion is atomic on the server. Upload capabilities cannot overwrite originals. Abandoned upload cleanup remains an operational follow-up: objects must be retained until the two-hour upload capability expires, plus five minutes; there is no automatic janitor yet.
+
+Invitations also accept zero offers. The production SQL constraint allows 0–100 IDs, and private upload sessions and RPCs remain inaccessible to `anon` and `authenticated` roles. Targeted offline tests, TypeScript, ESLint and the production build passed. This is separate from the still-blocked autonomous Claude/MCP run.

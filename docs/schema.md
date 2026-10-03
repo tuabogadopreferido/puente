@@ -51,3 +51,8 @@ Invitation tokens are hashed and grant no document access. The `invitations` tab
 `accept_company_invitation(p_token_hash text, p_user_id uuid)` runs only as service_role. It atomically validates expiry, locks the invitation, checks the authenticated user's confirmed email against the invited email, creates a company/member and four default privacy purposes if needed, and creates a 24-hour bilateral bridge without automatic sharing rules. Replays by the same accepted user are idempotent; other users cannot consume the invitation.
 
 A private `puente_private.confirmed_invitation_email(uuid)` helper reads the verified Auth email. It is the only SECURITY DEFINER helper, has an empty search path and an explicit service-role check, lives outside the exposed schema, and grants execution only to service_role. Public mutation RPCs remain SECURITY INVOKER.
+
+
+### Private large-file upload sessions
+
+`document_upload_sessions` binds an upload UUID, company, authenticated owner, filename, expected size, immutable private Storage path, two-hour expiry, processing lease and completion state. Browser roles cannot read or mutate it. Service-only `claim_document_upload` and `finish_document_upload` enforce owner membership, serialize processing and publish document metadata atomically. Originals may contain at most 20 MiB and 80 pages. Requests and invitations may contain zero return offers.
