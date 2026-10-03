@@ -55,3 +55,5 @@ The test revoked and removed its temporary bridge, request, links, tokens, event
 ## Secret handling and production dependencies
 
 A scan of all 84 Git-history blobs then present found no exact matches for the five configured private values. The production HTML and nine browser scripts were checked against those values with no matches. Environment files and work files remain ignored; the local environment file has mode 600. The production dependency audit reported zero vulnerabilities. These checks supplement the source review and are limited to the scanned values and dependency advisory database.
+
+The final production deployment also passed all 34 document-policy HTTP checks. Its temporary metadata row was removed and all seeded documents remained unchanged.
