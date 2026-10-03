@@ -12,7 +12,11 @@ export async function POST(request: Request) {
   try {
     const owner = await requireOwner(request);
     const input = uploadInitSchema.parse(await readUploadJson(request));
-    return json(await initializeDocumentUpload(owner, input), 201);
+    const { uploadId, token, path } = await initializeDocumentUpload(
+      owner,
+      input,
+    );
+    return json({ uploadId, token, path }, 201);
   } catch (error) {
     if (error instanceof ApiError || error instanceof ZodError)
       return fail(error);

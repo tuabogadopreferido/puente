@@ -50,6 +50,7 @@ import {
 } from "lucide-react";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 import { normalizeSensitivity } from "@/lib/document-policy";
+import { OwnerAgentConnection } from "@/components/owner-agent-connection";
 
 type Company = {
   id: string;
@@ -594,6 +595,7 @@ export default function Home() {
   const [realtime, setRealtime] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [ownerAgentOpen, setOwnerAgentOpen] = useState(false);
   const [bridgeOpen, setBridgeOpen] = useState(false);
   const [counterparty, setCounterparty] = useState("");
   const [codeResult, setCodeResult] = useState<{
@@ -1083,6 +1085,17 @@ export default function Home() {
         <div className="sidebar-developer">
           <span className="nav-caption">DEVELOPER</span>
           <button
+            className="nav-item"
+            disabled={!data.company.id}
+            onClick={() => {
+              setMobileNav(false);
+              setOwnerAgentOpen(true);
+            }}
+          >
+            <KeyRound size={18} />
+            <span>Connect my agent</span>
+          </button>
+          <button
             className={`nav-item ${view === "playground" ? "active" : ""}`}
             onClick={() => navigate("playground")}
           >
@@ -1200,13 +1213,23 @@ export default function Home() {
                     Your originals stay private. You decide how they are shared.
                   </p>
                 </div>
-                <button
-                  className="button button-dark"
-                  onClick={() => setUploadOpen(true)}
-                >
-                  <Plus size={17} />
-                  Upload document
-                </button>
+                <div className="heading-actions">
+                  <button
+                    className="button button-outline"
+                    disabled={!data.company.id}
+                    onClick={() => setOwnerAgentOpen(true)}
+                  >
+                    <KeyRound size={17} />
+                    Connect my agent
+                  </button>
+                  <button
+                    className="button button-dark"
+                    onClick={() => setUploadOpen(true)}
+                  >
+                    <Plus size={17} />
+                    Upload document
+                  </button>
+                </div>
               </div>
               <div className="overview-row">
                 <section className="welcome-card">
@@ -2037,6 +2060,23 @@ export default function Home() {
           <CheckCircle2 size={18} />
           {toast}
         </div>
+      )}
+      {ownerAgentOpen && (
+        <Modal
+          title="Connect your company's agent"
+          subtitle="Manage your own company through MCP."
+          onClose={() => setOwnerAgentOpen(false)}
+          wide
+        >
+          <OwnerAgentConnection
+            companyName={data.company.name}
+            api={api}
+            onUpload={() => {
+              setOwnerAgentOpen(false);
+              setUploadOpen(true);
+            }}
+          />
+        </Modal>
       )}
       {uploadOpen && (
         <Modal

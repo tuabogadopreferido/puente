@@ -98,7 +98,12 @@ export async function initializeDocumentUpload(
       "Upload could not be initialized. Please retry.",
       "upload_unavailable",
     );
-  return { uploadId, token: signed.data.token, path };
+  return {
+    uploadId,
+    token: signed.data.token,
+    path,
+    signedUrl: signed.data.signedUrl,
+  };
 }
 
 const claimedSchema = z.discriminatedUnion("status", [
@@ -123,6 +128,7 @@ const claimedSchema = z.discriminatedUnion("status", [
 export async function completeDocumentUpload(
   owner: UploadOwner,
   uploadId: string,
+  beforeCommit?: () => Promise<void>,
 ) {
   const db = admin();
   const leaseId = randomUUID();
@@ -141,7 +147,10 @@ export async function completeDocumentUpload(
       "upload_unavailable",
     );
   const claimed = parsedClaim.data;
-  if (claimed.status === "completed") return ingestionResult(claimed.document);
+  if (claimed.status === "completed") {
+    await beforeCommit?.();
+    return ingestionResult(claimed.document);
+  }
   const session = claimed.session;
   const path = `${owner.companyId}/${uploadId}.pdf`;
   if (
@@ -218,6 +227,7 @@ export async function completeDocumentUpload(
         "upload_size_mismatch",
       );
     const metadata = await analyzePdf(original, session.filename);
+    await beforeCommit?.();
     const finished = await db.rpc("finish_document_upload", {
       p_upload_id: uploadId,
       p_user_id: owner.userId,
