@@ -1,10 +1,10 @@
-# Puente: three-minute demo
+# Puente: optional three-minute demo reference
 
 **Live app:** [puente-phi.vercel.app](https://puente-phi.vercel.app)
 
 **Repository:** [tuabogadopreferido/puente](https://github.com/tuabogadopreferido/puente)
 
-This script runs from **0:00 to 3:00**. The presenter will use the real REST-powered Agent playground as Globex's agent, with Acme's owner dashboard in the same browser. The agent session will remain connected when the presenter switches to Requests and back.
+This optional reference runs from **0:00 to 3:00** and can support a live walkthrough or recording. The presenter will use the real REST-powered Agent playground as Globex's agent, with Acme's owner dashboard in the same browser. The agent session will remain connected when the presenter switches to Requests and back.
 
 ## Preparation before the recording
 
@@ -28,12 +28,12 @@ All companies, people, identifiers and PDFs in the demonstration are fictional. 
 
 ## Verified capabilities and recording boundaries
 
-The timed walkthrough uses the dashboard for the owner's decision. Production classification and automatic outbound email now have live evidence; the limits below will keep the narration consistent with what was actually verified.
+The timed walkthrough uses the dashboard for the owner's decision. Production classification, automatic outbound email and actual inbound manual replies have live evidence; the limits below will keep the narration consistent with what was actually verified.
 
 - **Classification:** production uses Claude Opus 5.5 directly through Anthropic, with workspace routing and low effort. Two newly uploaded synthetic PDFs passed type, expiry and financial-sensitivity checks; their original bytes, SHA-256 fingerprints and Ed25519 receipts also verified. The seeded vault files remain **Owner reviewed**, and the presenter will not describe those fixtures as AI-classified. A recorded upload will show its actual returned classification; an inference failure will still leave the original for owner review.
 - **Automatic escalation:** AgentMail sent a real production review message to the configured Gmail mailbox with all three signed decision links. It arrived in Spam. A fresh production roundtrip passed all seven checks, including approval through the received email, original integrity, signed receipt, replay rejection, revocation and cleanup. The presenter can approve through a newly delivered email or use Requests for the timed walkthrough. If asked: “Automatic review email and its approval-to-delivery flow are verified; Gmail placed the test message in Spam.”
 - **Local SMTP fallback:** the separate operator-run test passed seven checks, including a real message, read-only IMAP retrieval of its signed links, non-mutating GET, explicit approval, original-PDF integrity, Ed25519 verification, sibling/replay rejection and revocation with cleanup. This remains fallback evidence and does not establish Supabase Auth signup-mail delivery.
-- **Manual response:** the presenter may demonstrate **Send manual response** through the dashboard or signed review page after the timed run. It supplies instructions without granting document access. AgentMail webhook registration is blocked by HTTP 403 (`missing_permission`) for `webhook_create` / `webhook_read`; a reply sent to the email itself is not a verified working path.
+- **Manual response:** the presenter may reply to a newly delivered review email or use **Send manual response** through the dashboard or signed review page after the timed run. The real AgentMail reply path passed nine production checks: the exact text was recorded without releasing a PDF, download URL or receipt; all three links were consumed, replay failed, and revocation and cleanup passed. This supplies instructions without granting document access. The test notification was sent on 2026-10-03 at 16:04:35 CST (UTC-6); Puente recorded the applied manual response at 16:04:46 CST (UTC-6).
 - **MCP:** the playground uses the real REST API, and the actual MCP SDK separately passed seven integration groups against the same core. The Claude-driven MCP run completed `exchange_code`, then stopped on its second model step with `finishReason: content-filter`. The presenter will not describe that run as a completed autonomous exchange. This limit is separate from the successful Claude PDF classifications. Earlier Gateway credit-related HTTP 403 responses are historical, not the current classifier's status.
 
 An email-based recording will require a fresh pending request and a newly delivered message. The presenter will show a real observed result, using the configured mailbox's Spam folder if needed, and will keep signed links out of public screenshots. The verified test links were consumed or invalidated during cleanup.

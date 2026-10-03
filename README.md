@@ -33,7 +33,7 @@ A request is automatic only when the document is classified, current, nonfinanci
 
 Financial statements and tax returns, expired files with no current replacement, unknown classifications, unlisted purposes and unmatched rules require owner review. Supplier onboarding materials such as bank covers, tax-status certificates, SAT opinions, incorporation deeds and representative IDs are routine documents. The owner can correct Claude's classification.
 
-Approvals apply to a specific request. “Approve and create rule” is available for eligible routine documents; financial information always requires another approval on its next request. Manual responses submitted through the dashboard or signed review page never grant access. An offered document also remains subject to its owner's rules in the reverse direction.
+Approvals apply to a specific request. “Approve and create rule” is available for eligible routine documents; financial information always requires another approval on its next request. Manual responses submitted through the dashboard, signed review page or verified email reply never grant access. An offered document also remains subject to its owner's rules in the reverse direction.
 
 ## Architecture
 
@@ -53,7 +53,7 @@ flowchart LR
   Core --> Mail[AgentMail owner review]
 ```
 
-Supabase provides the database, owner authentication, tenant row isolation, private originals, atomic single-use credential redemption and Realtime events. Vercel hosts Next.js and the MCP/REST endpoints. The AI SDK calls Claude Opus 5.5 directly through Anthropic with workspace routing and low effort; AI Gateway is available when no direct key is configured. AgentMail sends owner-review messages. The inbound-reply implementation remains unavailable in production because webhook registration lacks the required permissions.
+Supabase provides the database, owner authentication, tenant row isolation, private originals, atomic single-use credential redemption and Realtime events. Vercel hosts Next.js and the MCP/REST endpoints. The AI SDK calls Claude Opus 5.5 directly through Anthropic with workspace routing and low effort; AI Gateway is available when no direct key is configured. AgentMail sends owner-review messages and receives manual replies through its production webhook. A verified reply records the owner's instructions without releasing the requested document.
 
 See [database contract](docs/schema.md) and [verification](docs/verification.md).
 
@@ -139,7 +139,7 @@ You will configure `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID` and `PUENTE_REVIEW_
 
 **Production delivery verified:** AgentMail configuration is present in production, and an automatic review message reached the configured Gmail mailbox in Spam with all three signed decision links. A fresh seven-check production run verified that message's signed approval, byte-preserving original delivery, SHA-256, Ed25519, replay rejection, revocation and temporary-record cleanup. The earlier operator-run SMTP roundtrip also passed.
 
-Inbound reply processing remains blocked: AgentMail returned HTTP 403 (`missing_permission`) for the required `webhook_create` / `webhook_read` permissions. After those permissions are available, an authorized operator will register `/api/webhooks/agentmail` for `message.received` and set `AGENTMAIL_WEBHOOK_SECRET`. The implemented handler checks Svix signatures, timestamps, sender and thread, but no working inbound-email-reply flow is claimed. Manual responses work through the dashboard and signed review page.
+**Inbound manual replies verified:** the production `message.received` webhook is enabled for the configured inbox, using an inbox-scoped key with message read/send and webhook read/create permissions. Set `AGENTMAIL_WEBHOOK_SECRET` to verify provider signatures. The handler also checks timestamps, sender and thread before applying a response. A separate nine-check production run sent one review email and one actual reply, recorded the exact manual text without issuing a PDF, download URL or receipt, consumed all three decision links, rejected replay, and verified revocation and cleanup. Manual responses also work through the dashboard and signed review page.
 
 For an operator-run SMTP demo, `scripts/demo-email.ts` prepares one existing pending request between the fictional Acme and Globex companies. Set `PUENTE_REVIEW_EMAIL`, `PUENTE_SMTP_HELPER` to the absolute path of your external compatible Gmail helper, and `NEXT_PUBLIC_APP_URL` to the deployed HTTPS origin. The external helper loads its own credentials; those credentials do not belong in this repository or Vercel.
 
@@ -150,7 +150,7 @@ node --env-file=.env.local --import tsx scripts/demo-email.ts --request REQUEST_
 node --env-file=.env.local --import tsx scripts/demo-email.ts --request REQUEST_UUID --send
 ```
 
-This optional local transport is not part of a fresh clone's dependencies. It requires a helper exposing `load_env()` and `send_via_smtp(...)`; the script's `--help` lists its settings. It refuses to run on Vercel. Its three signed buttons open the production approval pages, and manual responses use that page. SMTP replies are not processed. An uncertain send remains reserved to prevent duplicate email. This fallback does not configure Supabase Auth signup mail.
+This optional local transport is not part of a fresh clone's dependencies. It requires a helper exposing `load_env()` and `send_via_smtp(...)`; the script's `--help` lists its settings. It refuses to run on Vercel. Its three signed buttons open the production approval pages, and manual responses use that page. Replies to the standalone SMTP fallback are not processed. An uncertain send remains reserved to prevent duplicate email. This fallback does not configure Supabase Auth signup mail.
 
 ## Verification
 
@@ -167,6 +167,8 @@ node --env-file=.env.local --import tsx scripts/document-policy-verify.ts
 ```
 
 `test:api` refuses to run with the three AgentMail variables configured, because broad exception tests can send real review messages. Use a dedicated app instance with outbound mail disabled for that suite; removing variables only from the verifier does not disable mail in a deployed target. To verify one authorized real notification, review and opt into `scripts/agentmail-demo-verify.ts --run` with `.env.local` loaded and `NEXT_PUBLIC_APP_URL` set to the production origin. Optional `PUENTE_SMTP_HELPER` confirms Gmail delivery through read-only IMAP and reports Spam separately.
+
+The separate opt-in `scripts/agentmail-reply-verify.ts --run` triggers one application review notification and sends one manual reply through the configured external helper, then verifies the real AgentMail webhook. It requires the webhook secret and an explicitly authorized recipient.
 
 The database tests verify tenant isolation, private Storage, exact hashes for the 16 seeded PDFs, service-only RPCs, atomic code redemption, approval replay protection and revoked bridges. Additional legitimate uploads and companies do not invalidate the fixture checks. HTTP/MCP tests exercise an actual SDK client, receipts and tamper rejection, human decisions, reciprocal offers, invalid purposes, expiry, injection-shaped IDs and immediate download revocation.
 

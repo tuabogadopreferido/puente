@@ -20,7 +20,9 @@ MCP, REST with OpenAPI, and an llms.txt guide expose the same authorization core
 
 The live demo exercises reciprocal exchange, routine authorization, a financial-document exception, owner approval, receipt delivery and immediate revocation. Seeded documents remain explicitly labeled owner-reviewed. Two separate production uploads were correctly classified by Claude Opus 5.5 through direct Anthropic, including their expiry and financial sensitivity; both original PDFs and signed receipts were verified.
 
-Automatic AgentMail escalation also delivered a real review message with three signed decision links to the configured Gmail mailbox, where it arrived in Spam. Its fresh seven-check production roundtrip passed: signed-link approval, original delivery, SHA-256 and Ed25519 verification, replay rejection, revocation and cleanup. The operator-run local SMTP fallback previously passed too. Manual responses are available through the dashboard and signed page.
+Automatic AgentMail escalation also delivered a real review message with three signed decision links to the configured Gmail mailbox, where it arrived in Spam. Its fresh seven-check production roundtrip passed: signed-link approval, original delivery, SHA-256 and Ed25519 verification, replay rejection, revocation and cleanup. The operator-run local SMTP fallback previously passed too.
+
+A separate nine-check production test verified an actual email reply through AgentMail's enabled webhook: the exact manual response was recorded without document access, all decision links were consumed, replay was rejected, and revocation and cleanup passed. Owners can also send manual responses through the dashboard and signed page.
 
 ## How Supabase is used
 
@@ -42,7 +44,7 @@ Supabase is the application's operational core:
 | Model Context Protocol | Model-independent agent tools for document access and owner administration |
 | Vercel AI SDK | Direct Anthropic classification; optional AI Gateway configuration when no direct key is set |
 | Claude Opus 5.5 | Direct Anthropic with workspace routing and low effort; two production PDF classifications passed |
-| AgentMail | Automatic production review email and three decision links verified; inbound webhook registration is blocked by missing permissions |
+| AgentMail | Verified production review email, signed approval links and real inbound manual replies through an enabled webhook |
 | Local SMTP helper and read-only IMAP | Verified operator-run review notification, signed-link approval and original delivery; separate from application mail automation |
 | unpdf | PDF text extraction |
 | pdf-lib | Creation of the clearly labeled fictional sample PDFs |
@@ -57,7 +59,6 @@ Supabase is the application's operational core:
 - **MCP endpoint:** [https://puente-phi.vercel.app/api/mcp](https://puente-phi.vercel.app/api/mcp)
 - **OpenAPI:** [https://puente-phi.vercel.app/api/openapi](https://puente-phi.vercel.app/api/openapi)
 - **Screenshots:** [Repository screenshots](https://github.com/tuabogadopreferido/puente/tree/main/docs/screenshots)
-- **Video:** `[pending: Roberto will record and provide the final video URL]`
 
 Published screenshots contain fictional document metadata, public receipt information and interface state. Access tokens, one-time codes, live decision links and private signing material are excluded.
 
@@ -84,6 +85,5 @@ The playground sends real REST requests and uses the same decision logic as MCP.
 - **Claude classification passed in production.** Two new synthetic PDFs returned the expected type, expiry and sensitivity through direct Anthropic using Claude Opus 5.5. Private Storage and HTTP delivery preserved their original bytes and SHA-256, and both Ed25519 receipts verified. Seeded files still display **Owner reviewed**. Earlier Gateway HTTP 403 results are historical and do not describe the current direct-Anthropic classifier.
 - **Automatic AgentMail delivery is verified.** The production configuration sent a real review message with all three signed links; Gmail placed it in Spam. The fresh AgentMail roundtrip passed seven checks covering actual delivery, signed links, approval, original integrity, signatures, replay rejection, revocation and cleanup. Its message was received on 2026-10-03 at 15:04:59 CST (UTC-6). The earlier operator-run SMTP fallback also passed.
 - **MCP protocol and model behavior have separate evidence.** The real MCP SDK passed seven core integration groups. The Claude-driven run completed `exchange_code` but stopped on the second model step with Anthropic `finishReason: content-filter`; a complete Claude-driven MCP exchange is not claimed.
-- **Manual responses work through the dashboard and signed review page.** AgentMail webhook registration returned HTTP 403 (`missing_permission`) for `webhook_create` / `webhook_read`, so inbound email replies remain blocked and unverified. A manual response does not authorize document delivery.
+- **Real email replies passed nine production checks.** On 2026-10-03, the review email was sent at 16:04:35 CST (UTC-6), and Puente recorded the applied manual response at 16:04:46 CST (UTC-6). The enabled AgentMail webhook recorded the exact reply without a PDF, download URL or receipt. All three decision links were consumed; replay rejection, revocation and cleanup passed. Manual responses also work through the dashboard and signed review page.
 - **Auth signup mail remains a separate dependency.** The review-email evidence does not establish Supabase Auth confirmation delivery. Custom Auth SMTP is not configured; new external mailbox signup remains unverified, while the confirmed fictional demo accounts can exercise invitation acceptance.
-- **Video submission is pending.** Roberto will record and provide the final video URL.
