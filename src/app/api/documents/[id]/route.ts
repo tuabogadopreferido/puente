@@ -1,0 +1,5 @@
+import { z } from 'zod';
+import { endpoint, assertDb, ApiError } from '@/lib/http';
+import { requireOwner } from '@/lib/auth';
+import { admin } from '@/lib/supabase-admin';
+export async function PATCH(req: Request, context: {params:Promise<{id:string}>}) { return endpoint(async () => { const {companyId}=await requireOwner(req); const data=z.object({document_type:z.enum(['tax_status','tax_compliance','incorporation','power_of_attorney','bank_cover','proof_of_address','repse','representative_id','balance_sheet','income_statement','tax_return','other']).optional(),sensitive:z.boolean().optional(),expires_at:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional()}).parse(await req.json()); const {data:doc,error}=await admin().from('documents').update({...data,classification_source:'owner_reviewed'}).eq('id',(await context.params).id).eq('company_id',companyId).select('id,title,document_type,sensitive,expires_at,classification_source').maybeSingle(); assertDb(error); if(!doc) throw new ApiError(404,'Document not found'); return doc; }); }
