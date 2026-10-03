@@ -108,7 +108,7 @@ The agent will call `exchange_code` with a code issued by the owner, then `list_
 
 An internal owner agent will authenticate with Supabase Auth, for example through `supabase.auth.signInWithPassword({ email, password })`, and use the returned **access token** in the MCP Authorization header. The Puente server verifies that token with Supabase Auth and resolves company membership from the database. The agent will never supply its own company or ownership claims.
 
-The same `list_documents`, `get_document`, `request_document` and `get_request_status` tools recognize the token's scope. An owner sees its own dossier and can retrieve its original PDFs with owner-scoped signed receipts. A bridge token requests from the other company and must satisfy purpose, reciprocal-offer and review rules.
+The same `list_documents`, `get_document`, `request_document` and `get_request_status` tools recognize the token's scope. An owner sees its own dossier and can retrieve its original PDFs with owner-scoped signed receipts. A bridge token requests from the other company and must satisfy purpose and review rules. Reciprocal offers are optional and remain empty when omitted; any offered IDs must belong to the requester.
 
 Owner-only MCP tools are `create_bridge`, `issue_access_code`, `revoke_bridge`, `list_requests` and `decide_request`. A bridge token cannot call these tools. Owner originals use a separate short-lived download ticket that rechecks the owner's active membership and expiry.
 
@@ -116,7 +116,7 @@ For REST administration, an owner will use the Supabase Auth token with `GET /ap
 
 ### Invite another company
 
-An owner can invite a company from **Bridges**, selecting a closed-list purpose and offering its own documents. `POST /api/invitations` accepts `{email, company_name, purpose_id, offered_document_ids}` and returns a private, signed link valid for 24 hours. AgentMail sends only to the configured demo reviewer; otherwise the owner can copy the link for the intended recipient.
+An owner can invite a company from **Bridges**, selecting a closed-list purpose and optionally offering its own documents. `POST /api/invitations` accepts `{email, company_name, purpose_id, offered_document_ids}` and returns a private, signed link valid for 24 hours. AgentMail sends only to the configured demo reviewer; otherwise the owner can copy the link for the intended recipient.
 
 The recipient opens `/invite`, signs up or signs in with the invited email, and confirms that mailbox through Supabase Auth. Acceptance creates a company and default purposes if needed, then a bilateral bridge. It does not release documents or create sharing rules. The API exposes only invitation metadata before acceptance, and repeated acceptance by the same verified user is idempotent.
 

@@ -150,26 +150,21 @@ export async function requestDocument(ctx: AgentContext, input: RequestInput) {
   }
   if (!purpose && !input.purpose?.trim() && !input.purpose_id)
     throw new ApiError(400, "Declare the purpose for this document request");
-  const { data: ownDocs, error: oe } = await admin()
-    .from("documents")
-    .select("id,document_type,sensitive,expires_at")
-    .eq("company_id", ctx.actorCompanyId);
-  assertDb(oe);
-  const owned = new Set((ownDocs ?? []).map((d) => d.id));
-  const offered =
-    input.offered_document_ids ??
-    (ownDocs ?? []).filter((d) => !d.sensitive).map((d) => d.id);
-  if (!offered.every((id) => owned.has(id)))
-    throw new ApiError(
-      403,
-      "You can offer only documents from your own company",
-    );
-  if (!offered.length)
-    throw new ApiError(
-      400,
-      "Offer at least one document from your own company as part of this bilateral request",
-      "offer_required",
-    );
+  const offered = input.offered_document_ids ?? [];
+  if (offered.length) {
+    const { data: ownDocs, error: oe } = await admin()
+      .from("documents")
+      .select("id")
+      .eq("company_id", ctx.actorCompanyId)
+      .in("id", offered);
+    assertDb(oe);
+    const owned = new Set((ownDocs ?? []).map((d) => d.id));
+    if (!offered.every((id) => owned.has(id)))
+      throw new ApiError(
+        403,
+        "You can offer only documents from your own company",
+      );
+  }
   const { data: rules, error: re } = await admin()
     .from("rules")
     .select("*")

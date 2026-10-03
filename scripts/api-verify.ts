@@ -131,10 +131,6 @@ async function login(email: string) {
 async function checkPdf(value: unknown) {
   const delivery = deliverySchema.parse(value);
   must(
-    delivery.offered_document_ids.length > 0,
-    "Delivery must include reciprocal offers",
-  );
-  must(
     delivery.extracted_text.length > 0,
     "Delivery must include extracted text",
   );
@@ -311,15 +307,37 @@ async function main() {
   must(injectedId.status === 400, "SQL-shaped identifier must fail validation");
   pass("Cross-company document access and forged reciprocal offers denied");
 
-  await checkPdf(
+  const noOffer = await checkPdf(
     await tool("get_document", {
       token,
       document_id: tax.id,
       purpose_id: purpose.id,
     }),
   );
+  assert.deepEqual(noOffer.offered_document_ids, [], "Omitted offers must stay empty");
+  const emptyOffer = await http("/api/requests", token, "POST", {
+    document_id: tax.id,
+    purpose_id: purpose.id,
+    offered_document_ids: [],
+  });
+  must(emptyOffer.ok, "An explicit empty offer must be accepted");
+  assert.deepEqual(
+    deliverySchema.parse(emptyOffer.data).offered_document_ids,
+    [],
+    "Explicit empty offers must stay empty",
+  );
+  const offeredId = listed.offered_documents[0].id;
+  const optionalOffer = deliverySchema.parse(
+    await tool("get_document", {
+      token,
+      document_id: tax.id,
+      purpose_id: purpose.id,
+      offered_document_ids: [offeredId],
+    }),
+  );
+  assert.deepEqual(optionalOffer.offered_document_ids, [offeredId]);
   pass(
-    "MCP delivers unchanged original PDF, extracted text, reciprocal offer and verifiable Ed25519 receipt",
+    "MCP delivers unchanged original PDF and verifiable receipt; omitted/empty offers stay empty and optional owned offers are preserved",
   );
   const financial = pendingSchema.parse(
     await tool("get_document", {

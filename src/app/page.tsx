@@ -159,6 +159,14 @@ type Delivery = {
   request_id?: string;
   message?: string;
   reason?: string;
+  manual_response?: string;
+};
+type AgentDocumentResult = {
+  id: string;
+  document: Document;
+  response?: Delivery;
+  error?: string;
+  requesting?: boolean;
 };
 const empty: Dashboard = {
   company: { id: "", name: "" },
@@ -598,6 +606,16 @@ export default function Home() {
   const [manualResponse, setManualResponse] = useState("");
   const [createRule, setCreateRule] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadError, setUploadError] = useState("");
+  const [uploadPhase, setUploadPhase] = useState("");
+  const [pendingUploadSession, setPendingUploadSession] = useState<{
+    uploadId: string;
+    token: string;
+    path: string;
+    uploaded: boolean;
+  } | null>(null);
+  const uploadInFlight = useRef(false);
+  const uploadSelection = useRef(0);
   const [correctionType, setCorrectionType] = useState("");
   const [correctionSensitive, setCorrectionSensitive] = useState(false);
   const [correctionExpiry, setCorrectionExpiry] = useState("");
@@ -759,28 +777,130 @@ export default function Home() {
       setBusy("");
     }
   }
+  async function selectUploadFile(file: File | null) {
+    const selection = ++uploadSelection.current;
+    setSelectedFile(null);
+    setPendingUploadSession(null);
+    setUploadError("");
+    setUploadPhase("");
+    if (!file) return;
+    if (
+      !/\.pdf$/i.test(file.name) ||
+      (file.type &&
+        !["application/pdf", "application/octet-stream"].includes(file.type))
+    ) {
+      setUploadError("Choose a PDF file.");
+      return;
+    }
+    if (!file.size || file.size > 20 * 1024 * 1024) {
+      setUploadError(
+        file.size
+          ? "This PDF exceeds the 20 MB limit. Choose a smaller PDF."
+          : "This file is empty. Choose a PDF with content.",
+      );
+      return;
+    }
+    setUploadPhase("Checking PDF…");
+    try {
+      const header = await file.slice(0, 5).text();
+      if (selection !== uploadSelection.current) return;
+      if (header !== "%PDF-")
+        throw new Error(
+          "This file is not a valid PDF. Choose the original PDF file.",
+        );
+      setSelectedFile(file);
+    } catch (err) {
+      if (selection === uploadSelection.current) setUploadError(errorText(err));
+    } finally {
+      if (selection === uploadSelection.current) setUploadPhase("");
+    }
+  }
   async function upload(e: FormEvent) {
     e.preventDefault();
-    if (!selectedFile) return;
-    const form = new FormData();
-    form.append("file", selectedFile);
-    let notice = "Document uploaded. Review its classification in the vault.";
-    if (
-      await mutate(
-        "upload",
-        async () => {
-          const result = await api<{ notice?: string }>(
-            "/api/documents/upload",
-            { method: "POST", body: form },
-          );
-          notice = result.notice || notice;
+    if (!selectedFile || uploadInFlight.current) return;
+    uploadInFlight.current = true;
+    setBusy("upload");
+    setUploadError("");
+    let current = pendingUploadSession;
+    let completed = false;
+    try {
+      const client = getSupabaseBrowser();
+      if (!client)
+        throw new Error(
+          "The workspace is being configured. Please try again shortly.",
+        );
+      if (!current) {
+        setUploadPhase("Preparing upload…");
+        const result = await api<{
+          uploadId: string;
+          token: string;
+          path: string;
+        }>("/api/documents/upload/init", {
+          method: "POST",
+          body: JSON.stringify({
+            filename: selectedFile.name,
+            size: selectedFile.size,
+          }),
+        });
+        current = { ...result, uploaded: false };
+        setPendingUploadSession(current);
+      }
+      if (!current.uploaded) {
+        setUploadPhase("Uploading original…");
+        const { error: storageError } = await client.storage
+          .from("documents")
+          .uploadToSignedUrl(current.path, current.token, selectedFile, {
+            contentType: "application/pdf",
+            upsert: false,
+          });
+        if (storageError) {
+          // The PUT may have reached Storage despite a lost response. Complete
+          // checks this same session's object; never allocate another path here.
+          setUploadPhase("Checking uploaded original…");
+        } else {
+          current = { ...current, uploaded: true };
+          setPendingUploadSession(current);
+          setUploadPhase("Classifying document…");
+        }
+      } else {
+        setUploadPhase("Classifying document…");
+      }
+      const result = await api<{ document: Document; notice?: string }>(
+        "/api/documents/upload/complete",
+        {
+          method: "POST",
+          body: JSON.stringify({ uploadId: current.uploadId }),
         },
-        notice,
-      )
-    ) {
-      setUploadOpen(false);
+      );
+      completed = true;
+      // Clear the completed operation before refreshing so a failed dashboard
+      // refresh cannot present it as a failed upload and create a duplicate.
+      setPendingUploadSession(null);
       setSelectedFile(null);
-      setToast(notice);
+      setUploadOpen(false);
+      setData((previous) => ({
+        ...previous,
+        documents: [
+          result.document,
+          ...previous.documents.filter((doc) => doc.id !== result.document.id),
+        ],
+      }));
+      setToast(
+        result.notice ||
+          "Document uploaded. Review its classification in the vault.",
+      );
+      setUploadPhase("Refreshing vault…");
+      await refresh(true);
+    } catch (err) {
+      if (completed)
+        setError(
+          "The document was saved, but the vault could not refresh. Refresh the workspace to see it.",
+        );
+      else setUploadError(errorText(err));
+    } finally {
+      setBusy("");
+      setUploadPhase("");
+      uploadInFlight.current = false;
     }
   }
   async function sendInvitation(e: FormEvent) {
@@ -1433,6 +1553,7 @@ export default function Home() {
                     className="button button-outline"
                     onClick={() => {
                       setInviteOpen(true);
+                      setInviteOffers([]);
                       setInvitation(null);
                       setInvitePurpose(data.purposes[0]?.id || "");
                     }}
@@ -1921,15 +2042,22 @@ export default function Home() {
         <Modal
           title="Add to your document vault"
           subtitle="The original PDF will be preserved. Classification is based on its content."
-          onClose={() => setUploadOpen(false)}
+          onClose={() => {
+            if (!uploadInFlight.current) setUploadOpen(false);
+          }}
         >
           <form onSubmit={upload}>
             <label className={`upload-zone ${selectedFile ? "has-file" : ""}`}>
               <input
                 type="file"
                 accept="application/pdf,.pdf"
-                required
-                onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                disabled={busy === "upload"}
+                aria-describedby="upload-status upload-error"
+                onChange={(e) => {
+                  const file = e.target.files?.[0] || null;
+                  e.target.value = "";
+                  void selectUploadFile(file);
+                }}
               />
               <div>
                 <Upload size={28} />
@@ -1937,12 +2065,22 @@ export default function Home() {
               <strong>
                 {selectedFile ? selectedFile.name : "Choose a PDF to upload"}
               </strong>
-              <span>
-                {selectedFile
-                  ? `${(selectedFile.size / 1024).toFixed(0)} KB · Ready to classify`
-                  : "PDF files · Original content stays intact"}
+              <span id="upload-status" role="status" aria-live="polite">
+                {uploadPhase ||
+                  (selectedFile
+                    ? `${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB · ${pendingUploadSession?.uploaded ? "Original uploaded; ready to finish" : "Ready to upload"}`
+                    : "PDF files up to 20 MB · Original content stays intact")}
               </span>
             </label>
+            {uploadError && (
+              <div className="inline-error" id="upload-error" role="alert">
+                {uploadError}
+              </div>
+            )}
+            <p className="form-note">
+              Maximum file size: 20 MB (20,971,520 bytes). Keep this page open
+              until the upload finishes.
+            </p>
             <div className="info-banner compact">
               <Sparkles size={18} />
               <p>
@@ -1957,12 +2095,16 @@ export default function Home() {
               {busy === "upload" ? (
                 <>
                   <LoaderCircle size={16} className="spin" />
-                  Uploading and classifying…
+                  {uploadPhase || "Preparing upload…"}
                 </>
               ) : (
                 <>
                   <Upload size={16} />
-                  Upload document
+                  {pendingUploadSession?.uploaded
+                    ? "Retry classification"
+                    : pendingUploadSession
+                      ? "Retry upload"
+                      : "Upload document"}
                 </>
               )}
             </button>
@@ -2106,7 +2248,7 @@ export default function Home() {
               <div className="offer-title">
                 <CheckCheck size={16} />
                 <strong>Documents you will offer</strong>
-                <span>Required</span>
+                <span>Optional</span>
               </div>
               <div className="offer-list">
                 {data.documents.map((doc) => (
@@ -2127,12 +2269,13 @@ export default function Home() {
                 ))}
               </div>
               <p className="form-note">
-                The invitation shares no PDF. The recipient will verify their
-                email and accept the exchange before a bridge is created.
+                Offering a document is optional. The invitation shares no PDF.
+                The recipient will verify their email and accept the exchange
+                before a bridge is created.
               </p>
               <button
                 className="button button-dark button-full"
-                disabled={!inviteOffers.length || !invitePurpose || !!busy}
+                disabled={!invitePurpose || !!busy}
               >
                 {busy === "invite" ? (
                   <LoaderCircle size={16} className="spin" />
@@ -2507,12 +2650,13 @@ function AgentPlayground({
   const [purposes, setPurposes] = useState<Purpose[]>([]);
   const [offered, setOffered] = useState<Document[]>([]);
   const [offeredIds, setOfferedIds] = useState<string[]>([]);
-  const [documentId, setDocumentId] = useState("");
+  const [documentIds, setDocumentIds] = useState<string[]>([]);
   const [purposeId, setPurposeId] = useState("");
-  const [result, setResult] = useState<Delivery | null>(null);
+  const [results, setResults] = useState<AgentDocumentResult[]>([]);
+  const [batchProgress, setBatchProgress] = useState("");
+  const batchInFlight = useRef(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const [responseTab, setResponseTab] = useState("receipt");
   async function catalog(accessToken: string) {
     const response = await api<
       | {
@@ -2531,7 +2675,9 @@ function AgentPlayground({
       : response.purposes || data.purposes;
     setDocs(documents);
     setPurposes(availablePurposes);
-    setDocumentId(documents[0]?.id || "");
+    setDocumentIds((ids) =>
+      ids.filter((id) => documents.some((doc) => doc.id === id)),
+    );
     setPurposeId(availablePurposes[0]?.id || "");
     setOffered(
       Array.isArray(response)
@@ -2543,7 +2689,7 @@ function AgentPlayground({
     e.preventDefault();
     setBusy("connect");
     setError("");
-    setResult(null);
+    setResults([]);
     try {
       const response = await api<{
         token: string;
@@ -2568,48 +2714,64 @@ function AgentPlayground({
       setBusy("");
     }
   }
-  async function requestDocument() {
-    setBusy("request");
+  async function requestDocuments() {
+    const selected = docs.filter((doc) => documentIds.includes(doc.id));
+    if (
+      !token ||
+      !purposeId ||
+      !selected.length ||
+      batchInFlight.current ||
+      busy
+    )
+      return;
+    batchInFlight.current = true;
+    setBusy("batch");
     setError("");
     try {
-      const response = await api<Delivery>(
-        "/api/requests",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            document_id: documentId,
-            purpose_id: purposeId,
-            offered_document_ids: offeredIds,
-          }),
-        },
-        token,
-      );
-      setResult(response);
+      for (const [index, document] of selected.entries()) {
+        const id = crypto.randomUUID();
+        setBatchProgress(`Requesting ${index + 1} of ${selected.length}…`);
+        setResults((previous) => [
+          ...previous,
+          { id, document, requesting: true },
+        ]);
+        try {
+          const response = await api<Delivery>(
+            "/api/requests",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                document_id: document.id,
+                purpose_id: purposeId,
+                offered_document_ids: offeredIds,
+              }),
+            },
+            token,
+          );
+          setResults((previous) =>
+            previous.map((entry) =>
+              entry.id === id
+                ? { ...entry, response, requesting: false }
+                : entry,
+            ),
+          );
+        } catch (err) {
+          setResults((previous) =>
+            previous.map((entry) =>
+              entry.id === id
+                ? { ...entry, error: errorText(err), requesting: false }
+                : entry,
+            ),
+          );
+        }
+      }
       onRefresh();
-    } catch (err) {
-      setError(errorText(err));
     } finally {
       setBusy("");
+      setBatchProgress("");
+      batchInFlight.current = false;
     }
   }
-  async function checkRequest() {
-    const id = result?.request_id || result?.request?.id;
-    if (!id) return;
-    setBusy("poll");
-    setError("");
-    try {
-      setResult(
-        await api<Delivery>(`/api/requests/${id}`, { method: "GET" }, token),
-      );
-      onRefresh();
-    } catch (err) {
-      setError(errorText(err));
-    } finally {
-      setBusy("");
-    }
-  }
-  const delivery = result?.delivery || result;
-  const isPending = !!result && !delivery?.download_url;
   return (
     <>
       <div className="page-heading">
@@ -2637,8 +2799,8 @@ function AgentPlayground({
         <Terminal size={23} />
         <p>
           This console acts as your partner&apos;s agent. You will connect with
-          a bridge code, select an approved purpose, and request an original
-          document.
+          a bridge code, select an approved purpose, and request original
+          documents. Each document is evaluated separately.
         </p>
         <Badge tone="glass">LIVE API</Badge>
       </div>
@@ -2675,16 +2837,19 @@ function AgentPlayground({
                 </div>
                 <div className="agent-session-actions">
                   <button
+                    disabled={!!busy}
                     onClick={() => {
                       setToken("");
                       setDocs([]);
-                      setResult(null);
+                      setDocumentIds([]);
+                      setResults([]);
                       setOfferedIds([]);
                     }}
                   >
                     Disconnect locally
                   </button>
                   <button
+                    disabled={!!busy}
                     onClick={() => {
                       setBusy("catalog");
                       setError("");
@@ -2706,6 +2871,7 @@ function AgentPlayground({
                     className="monospace"
                     placeholder="Paste your bridge code"
                     value={code}
+                    disabled={!!busy}
                     onChange={(e) => setCode(e.target.value)}
                     required
                     autoComplete="off"
@@ -2734,25 +2900,66 @@ function AgentPlayground({
               <span>02</span>
               <div>
                 <h2>Declare your purpose</h2>
-                <p>Request what you need. Offer your own documents.</p>
+                <p>
+                  Choose documents for one purpose. You may offer your own in
+                  return.
+                </p>
               </div>
             </div>
-            <label>
-              Document
-              <select
-                disabled={!token || !!busy}
-                value={documentId}
-                onChange={(e) => setDocumentId(e.target.value)}
+            <div className="offer-title">
+              <FileText size={16} />
+              <strong>Documents to request</strong>
+              <span>{documentIds.length} selected</span>
+            </div>
+            <div className="agent-session-actions">
+              <button
+                type="button"
+                disabled={!token || !!busy || !docs.length}
+                onClick={() => setDocumentIds(docs.map((doc) => doc.id))}
               >
-                <option value="">Select a document</option>
-                {docs.map((doc) => (
-                  <option key={doc.id} value={doc.id}>
+                Select all
+              </button>
+              <button
+                type="button"
+                disabled={!token || !!busy || !documentIds.length}
+                onClick={() => setDocumentIds([])}
+              >
+                Clear all
+              </button>
+            </div>
+            <div
+              className="offer-list"
+              role="group"
+              aria-label="Documents to request"
+            >
+              {docs.map((doc) => (
+                <label className="checkbox-label" key={doc.id}>
+                  <input
+                    type="checkbox"
+                    disabled={!token || !!busy}
+                    checked={documentIds.includes(doc.id)}
+                    onChange={(e) =>
+                      setDocumentIds((ids) =>
+                        e.target.checked
+                          ? [...ids, doc.id]
+                          : ids.filter((id) => id !== doc.id),
+                      )
+                    }
+                  />
+                  <span>
                     {docName(doc)}
                     {sensitive(doc) ? " · Sensitive" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
+                  </span>
+                </label>
+              ))}
+              {!docs.length && (
+                <p className="form-note">
+                  {token
+                    ? "No documents are available through this bridge."
+                    : "Documents will appear after connecting."}
+                </p>
+              )}
+            </div>
             <label>
               Business purpose
               <select
@@ -2771,14 +2978,19 @@ function AgentPlayground({
             <div className="offer-title">
               <CheckCheck size={16} />
               <strong>Offer your documents in return</strong>
-              <span>Required</span>
+              <span>Optional</span>
             </div>
+            <p className="form-note">
+              You can request documents without offering any. Offers remain
+              subject to your company&apos;s permissions.
+            </p>
             {offered.length ? (
               <div className="offer-list">
                 {offered.map((doc) => (
                   <label key={doc.id} className="checkbox-label">
                     <input
                       type="checkbox"
+                      disabled={!token || !!busy}
                       checked={offeredIds.includes(doc.id)}
                       onChange={(e) =>
                         setOfferedIds((ids) =>
@@ -2801,21 +3013,20 @@ function AgentPlayground({
             )}
             <button
               className="button button-dark button-full"
-              disabled={
-                !token ||
-                !documentId ||
-                !purposeId ||
-                !offeredIds.length ||
-                !!busy
-              }
-              onClick={() => void requestDocument()}
+              disabled={!token || !documentIds.length || !purposeId || !!busy}
+              onClick={() => void requestDocuments()}
             >
-              {busy === "request" ? (
-                <LoaderCircle size={16} className="spin" />
+              {busy === "batch" ? (
+                <>
+                  <LoaderCircle size={16} className="spin" />
+                  {batchProgress}
+                </>
               ) : (
                 <>
                   <ArrowRight size={16} />
-                  Request original PDF
+                  {documentIds.length > 1
+                    ? `Request ${documentIds.length} original PDFs`
+                    : "Request original PDF"}
                 </>
               )}
             </button>
@@ -2824,8 +3035,8 @@ function AgentPlayground({
         <section className="panel response-panel">
           <div className="panel-heading">
             <div>
-              <h2>Agent response</h2>
-              <p>Actual responses from the Puente API.</p>
+              <h2>Agent responses</h2>
+              <p>Each document keeps its own decision and delivery.</p>
             </div>
             <span className="terminal-dots">
               <i />
@@ -2833,95 +3044,28 @@ function AgentPlayground({
               <i />
             </span>
           </div>
-          {result ? (
-            <>
-              <div
-                className={`response-status ${delivery?.download_url ? "delivered" : ""}`}
-              >
-                {delivery?.download_url ? (
-                  <CheckCircle2 size={20} />
-                ) : (
-                  <Clock3 size={20} />
-                )}
-                <div>
-                  <strong>
-                    {delivery?.download_url
-                      ? "Document delivered"
-                      : nice(
-                          result.status ||
-                            result.request?.status ||
-                            "pending_approval",
-                        )}
-                  </strong>
-                  <p>
-                    {delivery?.download_url
-                      ? "Original PDF, extracted text and an integrity receipt."
-                      : result.reason ||
-                        result.message ||
-                        "The owner will review this request before delivery."}
-                  </p>
-                </div>
-              </div>
-              {delivery?.download_url && (
-                <a
-                  className="button button-dark delivery-download"
-                  href={delivery.download_url}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <ArrowDownToLine size={16} />
-                  Download original PDF
-                  <ArrowUpRight size={14} />
-                </a>
-              )}
-              {isPending && (result.request_id || result.request?.id) && (
-                <button
-                  className="button button-outline delivery-download"
-                  onClick={() => void checkRequest()}
+          {results.length ? (
+            <div aria-live="polite">
+              {results.map((entry) => (
+                <AgentResult
+                  key={entry.id}
+                  entry={entry}
+                  token={token}
+                  api={api}
                   disabled={!!busy}
-                >
-                  <RefreshCw
-                    size={15}
-                    className={busy === "poll" ? "spin" : ""}
-                  />
-                  Check owner decision
-                </button>
-              )}
-              <div className="response-tabs">
-                {[
-                  ["receipt", "Receipt"],
-                  ["text", "Extracted text"],
-                  ["raw", "Raw response"],
-                ].map(([id, label]) => (
-                  <button
-                    key={id}
-                    className={responseTab === id ? "active" : ""}
-                    onClick={() => setResponseTab(id)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <pre className="json-output response-output">
-                {responseTab === "text"
-                  ? delivery?.extracted_text ||
-                    "Extracted text will be available after delivery."
-                  : responseTab === "receipt"
-                    ? delivery?.receipt
-                      ? JSON.stringify(delivery.receipt, null, 2)
-                      : "A receipt is generated when the original document is delivered."
-                    : JSON.stringify(result, null, 2)}
-              </pre>
-              {delivery?.receipt && (
-                <div className="receipt-note">
-                  <Fingerprint size={17} />
-                  <span>
-                    The receipt binds the original file, recipient, bridge and
-                    declared purpose.
-                  </span>
-                </div>
-              )}
-            </>
+                  onUpdate={(response) =>
+                    setResults((previous) =>
+                      previous.map((item) =>
+                        item.id === entry.id
+                          ? { ...item, response, error: undefined }
+                          : item,
+                      ),
+                    )
+                  }
+                  onRefresh={onRefresh}
+                />
+              ))}
+            </div>
           ) : (
             <div className="response-empty">
               <div className="response-illustration">
@@ -2954,5 +3098,189 @@ function AgentPlayground({
         </section>
       </div>
     </>
+  );
+}
+
+function AgentResult({
+  entry,
+  token,
+  api,
+  disabled,
+  onUpdate,
+  onRefresh,
+}: {
+  entry: AgentDocumentResult;
+  token: string;
+  api: <T>(path: string, init?: RequestInit, token?: string) => Promise<T>;
+  disabled: boolean;
+  onUpdate: (response: Delivery) => void;
+  onRefresh: () => void;
+}) {
+  const [tab, setTab] = useState("receipt");
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [verified, setVerified] = useState<boolean | null>(null);
+  const result = entry.response;
+  const delivery = result?.delivery || result;
+  const requestId = result?.request_id || result?.request?.id;
+  async function checkRequest() {
+    if (!requestId || disabled || busy) return;
+    setBusy("poll");
+    setError("");
+    try {
+      onUpdate(
+        await api<Delivery>(
+          `/api/requests/${requestId}`,
+          { method: "GET" },
+          token,
+        ),
+      );
+      setVerified(null);
+      onRefresh();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy("");
+    }
+  }
+  async function verify() {
+    if (!delivery?.receipt || disabled || busy) return;
+    setBusy("verify");
+    setError("");
+    try {
+      const response = await api<{ valid: boolean }>("/api/receipts/verify", {
+        method: "POST",
+        body: JSON.stringify(delivery.receipt),
+      });
+      setVerified(response.valid);
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy("");
+    }
+  }
+  return (
+    <article
+      style={{
+        borderBottom: "1px solid var(--border, #e1e7df)",
+        paddingBottom: 20,
+        marginBottom: 20,
+      }}
+      aria-label={`Result for ${docName(entry.document)}`}
+    >
+      <div className="panel-heading">
+        <h3>{docName(entry.document)}</h3>
+      </div>
+      <div
+        className={`response-status ${delivery?.download_url ? "delivered" : ""}`}
+      >
+        {entry.requesting ? (
+          <LoaderCircle size={20} className="spin" />
+        ) : entry.error ? (
+          <XCircle size={20} />
+        ) : delivery?.download_url ? (
+          <CheckCircle2 size={20} />
+        ) : (
+          <Clock3 size={20} />
+        )}
+        <div>
+          <strong>
+            {entry.requesting
+              ? "Requesting document…"
+              : entry.error
+                ? "Request failed"
+                : delivery?.download_url
+                  ? "Document delivered"
+                  : nice(
+                      result?.status || result?.request?.status || "pending",
+                    )}
+          </strong>
+          <p>
+            {entry.error ||
+              (delivery?.download_url
+                ? "Original PDF, extracted text and an integrity receipt."
+                : result?.manual_response ||
+                  result?.reason ||
+                  result?.message ||
+                  "Each document is evaluated against the owner's permissions.")}
+          </p>
+        </div>
+      </div>
+      {error && (
+        <div className="inline-error" role="alert">
+          {error}
+        </div>
+      )}
+      {delivery?.download_url && (
+        <a
+          className="button button-dark delivery-download"
+          href={delivery.download_url}
+          target="_blank"
+          rel="noreferrer"
+        >
+          <ArrowDownToLine size={16} />
+          Download original PDF
+          <ArrowUpRight size={14} />
+        </a>
+      )}
+      {requestId && (
+        <button
+          className="button button-outline delivery-download"
+          disabled={disabled || !!busy}
+          onClick={() => void checkRequest()}
+        >
+          <RefreshCw size={15} className={busy === "poll" ? "spin" : ""} />
+          {delivery?.download_url
+            ? "Refresh download link"
+            : "Check owner decision"}
+        </button>
+      )}
+      {delivery?.receipt && (
+        <button
+          className="button button-outline delivery-download"
+          disabled={disabled || !!busy}
+          onClick={() => void verify()}
+        >
+          <ShieldCheck size={15} />
+          {busy === "verify" ? "Verifying receipt…" : "Verify receipt"}
+        </button>
+      )}
+      {verified !== null && (
+        <p className="form-note" role="status">
+          {verified
+            ? "Receipt signature verified (Ed25519)."
+            : "Receipt signature is not valid."}
+        </p>
+      )}
+      {result && (
+        <>
+          <div className="response-tabs">
+            {[
+              ["receipt", "Receipt"],
+              ["text", "Extracted text"],
+              ["raw", "Raw response"],
+            ].map(([id, label]) => (
+              <button
+                key={id}
+                className={tab === id ? "active" : ""}
+                onClick={() => setTab(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <pre className="json-output response-output">
+            {tab === "text"
+              ? delivery?.extracted_text ||
+                "Extracted text will be available after delivery."
+              : tab === "receipt"
+                ? delivery?.receipt
+                  ? JSON.stringify(delivery.receipt, null, 2)
+                  : "A receipt is generated when the original document is delivered."
+                : JSON.stringify(result, null, 2)}
+          </pre>
+        </>
+      )}
+    </article>
   );
 }

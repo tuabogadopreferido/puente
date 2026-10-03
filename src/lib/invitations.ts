@@ -17,7 +17,7 @@ export const invitationInput = z.object({
     .transform((value) => value.trim().toLowerCase()),
   company_name: z.string().trim().min(1).max(200),
   purpose_id: z.uuid(),
-  offered_document_ids: z.array(z.uuid()).min(1).max(100),
+  offered_document_ids: z.array(z.uuid()).max(100).default([]),
 });
 const claimsSchema = z.object({
   id: z.uuid(),
@@ -162,11 +162,13 @@ export async function createInvitation(
       .eq("id", input.purpose_id)
       .eq("company_id", owner.companyId)
       .maybeSingle(),
-    db
-      .from("documents")
-      .select("id")
-      .eq("company_id", owner.companyId)
-      .in("id", offers),
+    offers.length
+      ? db
+          .from("documents")
+          .select("id")
+          .eq("company_id", owner.companyId)
+          .in("id", offers)
+      : Promise.resolve({ data: [], error: null }),
   ]);
   for (const result of [company, purpose, documents]) assertDb(result.error);
   if (!company.data || !purpose.data)
