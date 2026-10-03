@@ -3,6 +3,7 @@ import { agentFromHash, sha256 } from "@/lib/auth";
 import { admin } from "@/lib/supabase-admin";
 import { fail, ApiError, assertDb } from "@/lib/http";
 import { logEvent } from "@/lib/core";
+import { streamPdfResponse } from "@/lib/pdf-response";
 export async function GET(req: Request) {
   try {
     const ticket = readDownload(
@@ -43,15 +44,7 @@ export async function GET(req: Request) {
       doc.id,
       { receipt_id: ticket.receipt_id },
     );
-    return new Response(bytes, {
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${doc.title.replace(/[^a-zA-Z0-9 _-]/g, "").slice(0, 80)}.pdf"`,
-        "Cache-Control": "no-store",
-        "X-Content-Type-Options": "nosniff",
-        "X-Puente-SHA256": doc.sha256,
-      },
-    });
+    return streamPdfResponse(bytes, doc.title, doc.sha256);
   } catch (e) {
     return fail(e);
   }

@@ -9,7 +9,8 @@ import type { PuenteDocument } from "@/lib/types";
 import { documentTypes, normalizeSensitivity } from "@/lib/document-policy";
 export { documentTypes } from "@/lib/document-policy";
 
-export const MAX_PDF_BYTES = 4 * 1024 * 1024;
+export const MAX_PDF_BYTES = 20 * 1024 * 1024;
+export const MAX_MULTIPART_PDF_BYTES = 4 * 1024 * 1024;
 const schema = z.object({
   document_type: z.enum(documentTypes),
   expires_at: z
@@ -94,26 +95,58 @@ export async function classifyPdf(bytes: Uint8Array, text: string) {
   }
 }
 
-export async function ingestPdf({
-  file,
-  companyId,
-}: {
-  file: File;
-  companyId: string;
-  userId?: string;
-}) {
-  if (!file.size || file.size > MAX_PDF_BYTES)
-    throw new ApiError(400, "Upload a PDF up to 4 MB.");
-  const original = new Uint8Array(await file.arrayBuffer());
+export function ingestionResult(document: PuenteDocument) {
+  const source = document.classification_source;
+  return {
+    document,
+    notice:
+      source === "awaiting_owner_review"
+        ? "Original PDF stored. Claude classification is unavailable; owner review is required before automatic access."
+        : ["claude_anthropic", "claude_ai_gateway"].includes(source)
+          ? "Original PDF stored and classified by Claude."
+          : "Original PDF stored. Classification was reviewed by its owner.",
+  };
+}
+
+/** Validates and analyzes server-read original bytes without modifying or uploading them. */
+export async function analyzePdf(original: Uint8Array, filename: string) {
+  if (!original.byteLength || original.byteLength > MAX_PDF_BYTES)
+    throw new ApiError(400, "Upload a PDF up to 20 MiB.");
   if (Buffer.from(original.subarray(0, 5)).toString("ascii") !== "%PDF-")
     throw new ApiError(400, "This file is not a PDF.");
   const sha256 = createHash("sha256").update(original).digest("hex");
   let text = "";
-  const pdf = await getDocumentProxy(original.slice(), {
-    maxImageSize: 16_777_216,
-  });
+  let loadTimedOut = false;
+  let loadTimer: ReturnType<typeof setTimeout> | undefined;
+  let pdf: Awaited<ReturnType<typeof getDocumentProxy>>;
   try {
-    if (pdf.numPages > 80)
+    pdf = await Promise.race([
+      getDocumentProxy(original.slice(), {
+        maxImageSize: 16_777_216,
+      }).then(async (document) => {
+        if (loadTimedOut) {
+          await document.loadingTask.destroy();
+          throw new Error("PDF loading timed out");
+        }
+        return document;
+      }),
+      new Promise<never>((_, reject) => {
+        loadTimer = setTimeout(() => {
+          loadTimedOut = true;
+          reject(new Error("PDF loading timed out"));
+        }, 15_000);
+      }),
+    ]);
+  } catch {
+    throw new ApiError(
+      400,
+      "This PDF could not be read. Use an unencrypted, valid PDF.",
+    );
+  } finally {
+    if (loadTimer) clearTimeout(loadTimer);
+  }
+  try {
+    if (pdf.numPages < 1 || pdf.numPages > 80)
       throw new ApiError(400, "PDFs may contain up to 80 pages.");
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -128,14 +161,35 @@ export async function ingestPdf({
       ]);
       text = result.text.slice(0, 200_000);
     } catch {
-      // Scanned or unusual PDFs still retain their complete original and can be reviewed.
+      // Scanned or unusual PDFs retain their original and use visual classification or owner review.
     } finally {
       if (timeout) clearTimeout(timeout);
     }
   } finally {
-    await pdf.loadingTask.destroy();
+    await pdf.loadingTask.destroy().catch(() => undefined);
   }
   const classification = await classifyPdf(original, text);
+  const title =
+    filename
+      .replace(/\.pdf$/i, "")
+      .replace(/[\x00-\x1f]/g, "")
+      .slice(0, 180) || "Corporate document";
+  return { title, ...classification, sha256, extracted_text: text };
+}
+
+/** Server-only ingestion for already-received files, including email attachments. */
+export async function ingestPdf({
+  file,
+  companyId,
+}: {
+  file: File;
+  companyId: string;
+  userId?: string;
+}) {
+  if (!file.size || file.size > MAX_PDF_BYTES)
+    throw new ApiError(400, "Upload a PDF up to 20 MiB.");
+  const original = new Uint8Array(await file.arrayBuffer());
+  const metadata = await analyzePdf(original, file.name);
   const id = randomUUID();
   const storagePath = `${companyId}/${id}.pdf`;
   const db = admin();
@@ -147,33 +201,21 @@ export async function ingestPdf({
     });
   if (storageError)
     throw new Error("The original PDF could not be stored. Please retry.");
-  const title =
-    file.name
-      .replace(/\.pdf$/i, "")
-      .replace(/[\x00-\x1f]/g, "")
-      .slice(0, 180) || "Corporate document";
   const { data, error } = await db
     .from("documents")
     .insert({
       id,
       company_id: companyId,
-      title,
-      ...classification,
-      sha256,
       storage_path: storagePath,
-      extracted_text: text,
+      ...metadata,
     })
     .select()
     .single();
   if (error) {
-    await db.storage.from("documents").remove([storagePath]);
-    throw new Error("Document metadata could not be saved. Please retry.");
+    // An insert response may be lost after commit. Preserve the original until its outcome is known.
+    throw new Error(
+      "Document metadata could not be confirmed. Please refresh before retrying.",
+    );
   }
-  return {
-    document: data as PuenteDocument,
-    notice:
-      classification.classification_source === "awaiting_owner_review"
-        ? "Original PDF stored. Claude classification is unavailable; owner review is required before automatic access."
-        : "Original PDF stored and classified by Claude.",
-  };
+  return ingestionResult(data as PuenteDocument);
 }

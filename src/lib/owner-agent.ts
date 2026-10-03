@@ -11,6 +11,7 @@ import { dashboard } from "@/lib/core";
 import { signReceipt } from "@/lib/crypto";
 import { ApiError, assertDb } from "@/lib/http";
 import type { PuenteDocument } from "@/lib/types";
+import { streamPdfResponse } from "@/lib/pdf-response";
 
 export interface OwnerAgentContext {
   kind: "owner";
@@ -323,14 +324,7 @@ export async function downloadOwnerOriginal(
     claims.user_id,
     "downloaded",
   );
-  return new Response(bytes, {
-    headers: {
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="${doc.title.replace(/[^a-zA-Z0-9 _-]/g, "").slice(0, 80)}.pdf"`,
-      "Cache-Control": "no-store",
-      "X-Content-Type-Options": "nosniff",
-      "X-Puente-SHA256": doc.sha256,
-      "Referrer-Policy": "no-referrer",
-    },
-  });
+  const response = streamPdfResponse(bytes, doc.title, doc.sha256);
+  response.headers.set("Referrer-Policy", "no-referrer");
+  return response;
 }
