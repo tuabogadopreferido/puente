@@ -180,19 +180,17 @@ export async function createInvitation(
     exp = Date.now() + 24 * 60 * 60 * 1000;
   const token = signInvitation(id, exp);
   const inviteUrl = `${origin()}/invite?token=${encodeURIComponent(token)}`;
-  const { error } = await db
-    .from("invitations")
-    .insert({
-      id,
-      token_hash: hash(token),
-      inviter_company_id: owner.companyId,
-      created_by_user_id: owner.userId,
-      invited_email: input.email,
-      company_name: input.company_name,
-      purpose_id: input.purpose_id,
-      offered_document_ids: offers,
-      expires_at: new Date(exp).toISOString(),
-    });
+  const { error } = await db.from("invitations").insert({
+    id,
+    token_hash: hash(token),
+    inviter_company_id: owner.companyId,
+    created_by_user_id: owner.userId,
+    invited_email: input.email,
+    company_name: input.company_name,
+    purpose_id: input.purpose_id,
+    offered_document_ids: offers,
+    expires_at: new Date(exp).toISOString(),
+  });
   assertDb(error);
   const email = await sendInvitation(
     input.email,
