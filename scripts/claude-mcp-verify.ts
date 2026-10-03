@@ -1,5 +1,5 @@
 /** Claude chooses MCP operations; all authentication material stays in this local harness. */
-import nextEnv from "@next/env";
+import { loadEnvConfig } from "@next/env";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { createClient } from "@supabase/supabase-js";
@@ -17,7 +17,7 @@ import {
 import { z } from "zod";
 import { getClaudeProvider } from "../src/lib/claude";
 
-nextEnv.loadEnvConfig(process.cwd());
+loadEnvConfig(process.cwd());
 const base = (process.env.PUENTE_TEST_URL || "http://127.0.0.1:3000").replace(
   /\/$/,
   "",
@@ -120,6 +120,11 @@ async function main() {
     maxRetries: 0,
     abortSignal: AbortSignal.timeout(45000),
   });
+  if (preflight.finishReason === "content-filter")
+    throw Object.assign(
+      new Error("Claude provider refused this turn (content-filter/refusal)."),
+      { code: "provider_refusal" },
+    );
   if (preflight.text.trim() !== "OK")
     throw new Error("Claude preflight did not complete its expected response");
   const auth = createClient(supabaseUrl, publicKey, options);
@@ -277,6 +282,32 @@ async function main() {
     tools,
     toolChoice: "auto",
     stopWhen: stepCountIs(8),
+    onStepFinish: (step) => {
+      console.log(
+        JSON.stringify({
+          step_finish: step.finishReason,
+          tool_calls: step.toolCalls.map((call) => call.toolName),
+          tool_results: step.toolResults.map((result) => result.toolName),
+          error_types: step.content
+            .filter((part) => part.type === "tool-error")
+            .map((part) => ({
+              tool: part.toolName,
+              error:
+                part.error instanceof Error
+                  ? sanitize(part.error.message).slice(0, 300)
+                  : "tool failed",
+            })),
+          output_tokens: step.usage.outputTokens,
+        }),
+      );
+      if (step.finishReason === "content-filter")
+        throw Object.assign(
+          new Error(
+            "Claude provider refused this turn (content-filter/refusal).",
+          ),
+          { code: "provider_refusal" },
+        );
+    },
     maxOutputTokens: provider.maxOutputTokens,
     maxRetries: 0,
     instructions:

@@ -12,21 +12,17 @@ The real MCP SDK Streamable HTTP client passed seven integration groups against 
 
 ## Claude-driven MCP run
 
-Status: **BLOCKED by Gateway model entitlement**.
+Status: **BLOCKED**.
 
-Native Vercel OIDC was provisioned and the Gateway model catalog returned the tested Claude slugs. Tiny inference requests returned these results:
+Model: `claude-opus-5-5`. Provider: `claude_anthropic`. Effort: `low`. Endpoint: `https://puente-phi.vercel.app/api/mcp`.
 
-| Model | Provider response |
-| --- | --- |
-| anthropic/claude-sonnet-5.5 | HTTP 403, GatewayInternalServerError: free-tier access denied; paid credits required |
-| anthropic/claude-sonnet-5 | HTTP 403, same entitlement restriction |
-| anthropic/claude-sonnet-4.6 | HTTP 403, same entitlement restriction |
-| anthropic/claude-haiku-4.5 | HTTP 403, same entitlement restriction |
-| anthropic/claude-3-haiku | HTTP 500, Internal Server Error |
+The real run completed MCP `exchange_code`. The following model turn returned `finishReason: content-filter` with zero output tokens, tool calls or tool errors. The installed Anthropic provider maps native `stop_reason: refusal` to this reason. No complete model-driven download is claimed and no further inference was attempted after the refusal was identified. The separate MCP SDK end-to-end checks above remain valid. Temporary bridge and test rows were removed.
 
-No model-driven completion is claimed. The ready-to-run `scripts/claude-mcp-verify.ts` uses a credential-free local tool harness: Claude chooses `exchange_code`, `list_documents`, `get_document` and `download_original`, while the harness retains all one-time codes, bearer tokens and signed download tickets locally. The original PDF and receipt are validated in that harness. Neither credentials nor extracted document text enter model tool results.
+No model-driven completion is claimed.
 
-After model access is available, run `node --import tsx scripts/claude-mcp-verify.ts`. It loads ignored environment files with Next.js and performs an inference preflight before creating any test state. A successful run will update this evidence with the actual model, tool sequence and verified SHA-256. The verifier removes its fresh bridge and temporary rows and never logs codes, tokens, prompts, document text or model responses.
+The harness keeps the one-time code, agent bearer token and signed download ticket locally. Claude receives credential-free tool schemas and an opaque original handle; the harness forwards real MCP calls and verifies returned bytes. Neither credentials nor extracted document text enter model prompts or tool results.
+
+Reproduce with `node --import tsx scripts/claude-mcp-verify.ts` after the configured Claude provider is accessible. The script loads ignored environment files with Next.js and removes its fresh bridge and test rows. It never prints prompts, document text or model responses.
 
 ## Authenticated Realtime
 
@@ -54,6 +50,31 @@ The test revoked and removed its temporary bridge, request, links, tokens, event
 
 ## Secret handling and production dependencies
 
-A scan of all 84 Git-history blobs then present found no exact matches for the five configured private values. The production HTML and nine browser scripts were checked against those values with no matches. Environment files and work files remain ignored; the local environment file has mode 600. The production dependency audit reported zero vulnerabilities. These checks supplement the source review and are limited to the scanned values and dependency advisory database.
+After the Anthropic and AgentMail deployment, all 152 Git-history blobs then present and the tracked or unignored working files were scanned against seven configured private values, including both new API keys, with no exact matches. The production HTML and nine browser scripts were checked against those values with no matches. Environment files and work files remain ignored; the local environment file has mode 600. The production dependency audit reported zero vulnerabilities. These checks supplement the source review and are limited to the scanned values and dependency advisory database.
 
 The final production deployment also passed all 34 document-policy HTTP checks. Its temporary metadata row was removed and all seeded documents remained unchanged.
+
+## Live Claude document classification
+
+Status: **PASS**. Production endpoint: https://puente-phi.vercel.app. Upload calls: 2/2. Cleanup: **PASS**.
+
+Two new synthetic PDFs were uploaded through the real owner API. Both returned `claude_anthropic`, with the expected content-derived type, explicit expiry semantics and financial sensitivity. Metadata, private Storage and authenticated owner delivery preserved each original byte-for-byte and matched its SHA-256; both Ed25519 receipts verified.
+
+| Sample | Source | Type | Expiry | Sensitive | Original hash |
+| --- | --- | --- | --- | --- | --- |
+| compliance opinion | claude_anthropic | tax_compliance | 2026-12-31 | false | PASS |
+| financial balance sheet | claude_anthropic | balance_sheet | none | true | PASS |
+
+The script made no inference preflight and retried no uploads. The direct-only classifier deployment must be confirmed before execution to keep the total at two inference calls. Tokens, PDFs and signed download URLs stayed in memory; logs and this section contain no credentials or document content. Cleanup targets only this run's unique document titles and their originals, receipts, events and request traces. No bridge is read or changed, and the eight seeded Acme records are checked for changes.
+
+Reproduce only after deployment readiness with `node --import tsx scripts/claude-classification-verify.ts --execute`. Without `--execute`, the script exits without network calls.
+
+## AgentMail production approval roundtrip
+
+Status: **PASS, delivered to Spam**. A fresh production request sent one real review notification on 2026-10-03 at 15:04:59 CST (UTC-6). `scripts/agentmail-demo-verify.ts` passed seven checks: automatic application dispatch; AgentMail readback matching the configured reviewer, thread and three signed actions; read-only Gmail confirmation in Spam; non-mutating review-page GETs; approval POST followed by original financial PDF SHA-256 and Ed25519 verification; rejection of consumed/sibling links and revocation of both token and issued download URL; and removal of all temporary bridge records. Financial approval created no reusable rule. No Gmail credentials were added to Puente or Vercel.
+
+An earlier message reached Spam too; the first verifier checked only All Mail/Inbox and stopped before approval. Its temporary records were removed. The corrected reader discovers folders through IMAP flags, matches the exact Message-ID, and reports delivery location separately from the approval flow. Both test messages remain in the reviewer's mailbox with invalidated test links; no mailbox settings were changed.
+
+The existing `puente-dataroom@agentmail.to` inbox authenticated successfully and initially had no messages. The inbox-scoped key permits message reading and sending. Creating its production `message.received` webhook returned HTTP 403 with `code: missing_permission`; inbox metadata and webhook listing were also forbidden. No inbound reply completion is claimed. The signed manual-response page remains available until webhook permission and its signing secret are supplied.
+
+Twelve offline checks in `scripts/agentmail-verify.ts` passed for concurrent notification claims, idempotency, uncertain delivery, signature/timestamp rejection, inbox/sender/thread/reply binding, unsafe labels, omitted-body retrieval, duplicate replies and transient database failures. These tests do not substitute for a real inbound webhook.

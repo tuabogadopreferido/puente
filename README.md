@@ -22,7 +22,7 @@ These are deliberately public test accounts. You will use synthetic files only.
 1. In **Bridges**, you will issue a one-time code for Globex on the Acme–Globex bridge.
 2. In **Agent playground**, you will exchange that code, select the SAT compliance opinion and the purpose **Alta como proveedor**, and offer Globex documents.
 3. The agent will receive the **unchanged original PDF**, extracted text and an **Ed25519-signed receipt** binding the SHA-256, recipient, bridge, purpose and delivery time.
-4. You will request the balance sheet to create a human review. From **Requests**, the owner will approve it; polling will then deliver the original. Configured AgentMail sends the same decision by email.
+4. You will request the balance sheet to create a human review. From **Requests**, the owner will approve it; polling will then deliver the original. Production AgentMail also sends the owner a review email with three signed decision links.
 5. In **Activity**, the owner will see the access through Supabase Realtime. Revoking the bridge will block the next API/MCP call and any previously issued download link.
 
 The demo contains an expired proof of address so you can also test an expiry exception. A new bridge can be created if another visitor has revoked the shared demo bridge.
@@ -33,7 +33,7 @@ A request is automatic only when the document is classified, current, nonfinanci
 
 Financial statements and tax returns, expired files with no current replacement, unknown classifications, unlisted purposes and unmatched rules require owner review. Supplier onboarding materials such as bank covers, tax-status certificates, SAT opinions, incorporation deeds and representative IDs are routine documents. The owner can correct Claude's classification.
 
-Approvals apply to a specific request. “Approve and create rule” is available for eligible routine documents; financial information always requires another approval on its next request. Manual replies never grant access. An offered document also remains subject to its owner's rules in the reverse direction.
+Approvals apply to a specific request. “Approve and create rule” is available for eligible routine documents; financial information always requires another approval on its next request. Manual responses submitted through the dashboard or signed review page never grant access. An offered document also remains subject to its owner's rules in the reverse direction.
 
 ## Architecture
 
@@ -53,7 +53,7 @@ flowchart LR
   Core --> Mail[AgentMail owner review]
 ```
 
-Supabase provides the database, owner authentication, tenant row isolation, private originals, atomic single-use credential redemption and Realtime events. Vercel hosts Next.js and the MCP/REST endpoints; The AI SDK calls Anthropic directly for Claude classification, with AI Gateway available when no direct key is configured. AgentMail handles outbound review and signed inbound webhooks.
+Supabase provides the database, owner authentication, tenant row isolation, private originals, atomic single-use credential redemption and Realtime events. Vercel hosts Next.js and the MCP/REST endpoints. The AI SDK calls Claude Opus 5.5 directly through Anthropic with workspace routing and low effort; AI Gateway is available when no direct key is configured. AgentMail sends owner-review messages. The inbound-reply implementation remains unavailable in production because webhook registration lacks the required permissions.
 
 See [database contract](docs/schema.md) and [verification](docs/verification.md).
 
@@ -82,7 +82,7 @@ npm run seed
 npm run dev
 ```
 
-Seeding creates two test Auth users, 16 PDFs, eight privacy purposes, 14 bilateral rules and one bridge. It is a demo fixture reset, including bridge status; never run it against a client database. Seeded documents are honestly labeled owner-verified until actual Claude classification is run.
+Seeding creates two test Auth users, 16 PDFs, eight privacy purposes, 14 bilateral rules and one bridge. It is a demo fixture reset, including bridge status; never run it against a client database. The seeded documents remain labeled owner-reviewed. The verified Claude classification run used two separate temporary uploads and did not change those fixture labels.
 
 For Claude, set `ANTHROPIC_API_KEY` and, for a personal key, `ANTHROPIC_WORKSPACE_ID`. Direct Anthropic takes priority over Gateway/OIDC and defaults to `claude-opus-5-5` with `effort: low`. Set `ANTHROPIC_MODEL` to override the direct model. Without a direct key, Vercel's deployment OIDC or `AI_GATEWAY_API_KEY` selects Gateway with `PUENTE_CLAUDE_MODEL` (default `anthropic/claude-opus-5.5`). If no accessible model is configured, originals are retained with **awaiting owner review**; the app never claims AI classification succeeded.
 
@@ -137,7 +137,9 @@ The response includes either `status: delivered` with a 60-second original downl
 
 You will configure `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID` and `PUENTE_REVIEW_EMAIL`. Demo mail goes only to that explicitly configured reviewer. The three actions are **Approve**, **Do not approve**, and **Give a manual response**. Links are signed, single-use and expire after 24 hours. GET opens a confirmation page; POST performs the decision, so link scanners cannot approve anything.
 
-For inbound replies, you will register `/api/webhooks/agentmail` for `message.received` and set `AGENTMAIL_WEBHOOK_SECRET`. Svix signatures, timestamps, the configured sender and the original email thread are checked. Dashboard review remains available when email is not configured.
+**Production delivery verified:** AgentMail configuration is present in production, and an automatic review message reached the configured Gmail mailbox in Spam with all three signed decision links. A fresh seven-check production run verified that message's signed approval, byte-preserving original delivery, SHA-256, Ed25519, replay rejection, revocation and temporary-record cleanup. The earlier operator-run SMTP roundtrip also passed.
+
+Inbound reply processing remains blocked: AgentMail returned HTTP 403 (`missing_permission`) for the required `webhook_create` / `webhook_read` permissions. After those permissions are available, an authorized operator will register `/api/webhooks/agentmail` for `message.received` and set `AGENTMAIL_WEBHOOK_SECRET`. The implemented handler checks Svix signatures, timestamps, sender and thread, but no working inbound-email-reply flow is claimed. Manual responses work through the dashboard and signed review page.
 
 For an operator-run SMTP demo, `scripts/demo-email.ts` prepares one existing pending request between the fictional Acme and Globex companies. Set `PUENTE_REVIEW_EMAIL`, `PUENTE_SMTP_HELPER` to the absolute path of your external compatible Gmail helper, and `NEXT_PUBLIC_APP_URL` to the deployed HTTPS origin. The external helper loads its own credentials; those credentials do not belong in this repository or Vercel.
 
@@ -149,7 +151,6 @@ node --env-file=.env.local --import tsx scripts/demo-email.ts --request REQUEST_
 ```
 
 This optional local transport is not part of a fresh clone's dependencies. It requires a helper exposing `load_env()` and `send_via_smtp(...)`; the script's `--help` lists its settings. It refuses to run on Vercel. Its three signed buttons open the production approval pages, and manual responses use that page. SMTP replies are not processed. An uncertain send remains reserved to prevent duplicate email. This fallback does not configure Supabase Auth signup mail.
-
 
 ## Verification
 
@@ -165,7 +166,15 @@ node --env-file=.env.local --import tsx scripts/realtime-verify.ts
 node --env-file=.env.local --import tsx scripts/document-policy-verify.ts
 ```
 
+`test:api` refuses to run with the three AgentMail variables configured, because broad exception tests can send real review messages. Use a dedicated app instance with outbound mail disabled for that suite; removing variables only from the verifier does not disable mail in a deployed target. To verify one authorized real notification, review and opt into `scripts/agentmail-demo-verify.ts --run` with `.env.local` loaded and `NEXT_PUBLIC_APP_URL` set to the production origin. Optional `PUENTE_SMTP_HELPER` confirms Gmail delivery through read-only IMAP and reports Spam separately.
+
 The database tests verify tenant isolation, private Storage, exact hashes for the 16 seeded PDFs, service-only RPCs, atomic code redemption, approval replay protection and revoked bridges. Additional legitimate uploads and companies do not invalidate the fixture checks. HTTP/MCP tests exercise an actual SDK client, receipts and tamper rejection, human decisions, reciprocal offers, invalid purposes, expiry, injection-shaped IDs and immediate download revocation.
+
+### Live classification and model-driven evidence
+
+Production uses **Claude Opus 5.5 through direct Anthropic**, with the workspace configured and `effort: low`. Two real production uploads passed: a tax-compliance opinion was classified with explicit expiry `2026-12-31` and nonsensitive status; a financial balance sheet was classified as sensitive with no inferred expiry. Both originals remained byte-for-byte identical in private Storage and HTTP delivery, with matching SHA-256 fingerprints and verified Ed25519 receipts. The temporary uploads were removed; the seeded documents remain owner-reviewed.
+
+The actual MCP SDK client separately passed all seven core integration groups. A Claude-driven MCP run completed `exchange_code`, then Anthropic stopped the second model step with `finishReason: content-filter`; a complete model-driven MCP exchange is therefore **not verified**. This does not change the successful classification or SDK results. Earlier Gateway HTTP 403 responses are historical; the current direct-Anthropic classifier has working model access.
 
 ## Security boundaries
 

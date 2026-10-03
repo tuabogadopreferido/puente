@@ -18,7 +18,9 @@ Every authorized delivery includes the unchanged original PDF, extracted text an
 
 MCP, REST with OpenAPI, and an llms.txt guide expose the same authorization core to different agents and models. Owners use the web dashboard or an internal agent authenticated with their Supabase session. Mexico is the first market, demonstrated with fictional Acme Supplies and Globex Servicios dossiers; the interface and developer documentation are in English.
 
-The live demo exercises reciprocal exchange, routine authorization, a financial-document exception, owner approval, receipt delivery and immediate revocation. Sample documents are explicitly labeled owner-reviewed. Claude classification and AgentMail escalation are integrated, with a working owner-review fallback when those external services are unavailable. A real review email and its signed approval-to-delivery flow were also verified through a local SMTP helper run by the operator; automatic application dispatch through AgentMail remains blocked.
+The live demo exercises reciprocal exchange, routine authorization, a financial-document exception, owner approval, receipt delivery and immediate revocation. Seeded documents remain explicitly labeled owner-reviewed. Two separate production uploads were correctly classified by Claude Opus 5.5 through direct Anthropic, including their expiry and financial sensitivity; both original PDFs and signed receipts were verified.
+
+Automatic AgentMail escalation also delivered a real review message with three signed decision links to the configured Gmail mailbox, where it arrived in Spam. Its fresh seven-check production roundtrip passed: signed-link approval, original delivery, SHA-256 and Ed25519 verification, replay rejection, revocation and cleanup. The operator-run local SMTP fallback previously passed too. Manual responses are available through the dashboard and signed page.
 
 ## How Supabase is used
 
@@ -38,9 +40,9 @@ Supabase is the application's operational core:
 | Vercel | Production deployment of the Next.js application and its server endpoints |
 | Next.js, React and TypeScript | Human dashboard and shared REST/MCP application logic |
 | Model Context Protocol | Model-independent agent tools for document access and owner administration |
-| Vercel AI SDK and AI Gateway | Claude document-classification integration |
-| Claude | Configured classification provider; live classification is currently blocked by unavailable credits |
-| AgentMail | Outbound review and inbound-reply integration implemented; automatic delivery remains blocked and real email replies are unverified |
+| Vercel AI SDK | Direct Anthropic classification; optional AI Gateway configuration when no direct key is set |
+| Claude Opus 5.5 | Direct Anthropic with workspace routing and low effort; two production PDF classifications passed |
+| AgentMail | Automatic production review email and three decision links verified; inbound webhook registration is blocked by missing permissions |
 | Local SMTP helper and read-only IMAP | Verified operator-run review notification, signed-link approval and original delivery; separate from application mail automation |
 | unpdf | PDF text extraction |
 | pdf-lib | Creation of the clearly labeled fictional sample PDFs |
@@ -77,11 +79,11 @@ The reviewer will select **Try the live demo** to enter Acme's workspace, or use
 
 The playground sends real REST requests and uses the same decision logic as MCP. It is not a simulated model conversation. A compatible MCP client can connect through the endpoint and configuration documented in the README.
 
-## Current external-service status
+## Current verification boundaries
 
-The submission must retain these qualifications until fresh evidence confirms the services are working:
-
-- Seeded documents are **owner-reviewed**. Claude inference through AI Gateway has returned HTTP 403 because the required credits are unavailable. The application retains uploads and requests owner review instead of claiming that AI classified them.
-- AgentMail's integration is implemented, but automatic application delivery remains blocked. The separate **operator-run local SMTP fallback passed seven checks**: actual review-email delivery, read-only retrieval of its three signed links, non-mutating GET, approving POST, original-PDF SHA-256 and Ed25519 verification, rejection of sibling links and replay, and revocation with cleanup. This evidence concerns review notifications only and does not establish Supabase Auth signup-mail delivery.
-- Manual responses work through the dashboard or signed review page and do not approve access. Real replies to an email have not been verified. Invitations continue to display their actual delivery status and provide a link when automated mail is unavailable.
-- The video URL remains pending until Roberto records and supplies it. No generated demonstration video is included.
+- **Claude classification passed in production.** Two new synthetic PDFs returned the expected type, expiry and sensitivity through direct Anthropic using Claude Opus 5.5. Private Storage and HTTP delivery preserved their original bytes and SHA-256, and both Ed25519 receipts verified. Seeded files still display **Owner reviewed**. Earlier Gateway HTTP 403 results are historical and do not describe the current direct-Anthropic classifier.
+- **Automatic AgentMail delivery is verified.** The production configuration sent a real review message with all three signed links; Gmail placed it in Spam. The fresh AgentMail roundtrip passed seven checks covering actual delivery, signed links, approval, original integrity, signatures, replay rejection, revocation and cleanup. Its message was received on 2026-10-03 at 15:04:59 CST (UTC-6). The earlier operator-run SMTP fallback also passed.
+- **MCP protocol and model behavior have separate evidence.** The real MCP SDK passed seven core integration groups. The Claude-driven run completed `exchange_code` but stopped on the second model step with Anthropic `finishReason: content-filter`; a complete Claude-driven MCP exchange is not claimed.
+- **Manual responses work through the dashboard and signed review page.** AgentMail webhook registration returned HTTP 403 (`missing_permission`) for `webhook_create` / `webhook_read`, so inbound email replies remain blocked and unverified. A manual response does not authorize document delivery.
+- **Auth signup mail remains a separate dependency.** The review-email evidence does not establish Supabase Auth confirmation delivery. Custom Auth SMTP is not configured; new external mailbox signup remains unverified, while the confirmed fictional demo accounts can exercise invitation acceptance.
+- **Video submission is pending.** Roberto will record and provide the final video URL.
