@@ -12,6 +12,7 @@ All IDs are UUID strings. Timestamps are ISO 8601 timestamptz values; document e
 | bridges | id, company_a_id, company_b_id, status (`active`, `revoked`), expires_at, created_at |
 | access_codes | id, code_hash, bridge_id, actor_company_id, expires_at, used_at, created_at |
 | agent_tokens | id, token_hash, bridge_id, actor_company_id, expires_at, created_at |
+| owner_agent_connections | id, user_id, company_id, label, token_hash, created_at, revoked_at (no expiry) |
 | requests | id, bridge_id, requester_company_id, owner_company_id, document_id, purpose_id (nullable), purpose_text, status (`pending`, `approved`, `denied`, `manual`), reason, offered_document_ids (UUID array), manual_response, email_thread_id, email_message_id, created_at, updated_at |
 | access_events | id, company_id (document owner), actor_company_id, bridge_id (nullable for owner self-access), document_id (nullable), action, detail (JSON), created_at |
 | receipts | id, company_id (document owner), receiver_company_id, payload (JSON), signature, public_key, created_at |
@@ -40,9 +41,15 @@ An active bridge permits either company to request from the other, but does not 
 
 ## Owner-agent scope
 
-The server verifies an owner's Supabase Auth access token with `auth.getUser` and retrieves its `company_members` row. User-editable metadata and caller-supplied company claims never authorize ownership. Owner MCP calls use the same document tools with a verified owner token; their scope is the owner's company.
+A signed-in owner will create a named connection from **Connect my agent**. The server returns one random `po_` bearer credential once and stores only its SHA-256 hash in `owner_agent_connections`. The table has RLS and no `anon` or `authenticated` grants. Management routes authenticate the browser's Supabase Auth token and scope metadata and revocation to the creating user and company. MCP bearer credentials cannot create new credentials or revoke another connection.
 
-Owner self-delivery receipts carry `scope: owner`, the verified owner user/company IDs and `bridge_id: null`. Owner download tickets are signed under a separate namespace and recheck active membership and expiry. The `access_events` constraint permits a null bridge only when actor and owner are the same company and the action is `owner_document_delivered` or `owner_pdf_downloaded`.
+Owner credentials have no automatic expiry. Each use resolves the hash, rejects a revoked connection and verifies current owner membership. The same authenticated creator may revoke it through the interface; MCP `revoke_owner_access` revokes only the calling connection. Legacy Supabase Auth bearer access remains supported with its own session expiry.
+
+The owner's company scope is independent of counterpart bridge tokens. Revoking an owner connection does not change bridges, access codes, counterpart tokens or their download tickets. Conversely, a bridge's 24-hour expiry or revocation does not expire an owner credential. Caller-supplied company claims never authorize ownership.
+
+Owner self-delivery receipts carry `scope: owner`, the verified user/company IDs, `bridge_id: null` and, for a durable credential, `owner_connection_id`. The separate owner download ticket binds that connection and rechecks membership, connection status and its own 60-second expiry before serving bytes. The `access_events` constraint permits a null bridge only when actor and owner are the same company and the action is `owner_document_delivered` or `owner_pdf_downloaded`.
+
+MCP `prepare_document_upload` issues a private signed Storage URL for a fixed path. The agent will PUT the unchanged PDF bytes to that URL, then call `complete_document_upload`. Completion checks owner authorization again after classification and before publishing metadata. The two-hour Storage capability cannot overwrite an original; revocation prevents completion but does not cancel a previously issued staging capability.
 
 ## Company invitations
 

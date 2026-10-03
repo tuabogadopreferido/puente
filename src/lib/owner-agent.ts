@@ -12,12 +12,18 @@ import { signReceipt } from "@/lib/crypto";
 import { ApiError, assertDb } from "@/lib/http";
 import type { PuenteDocument } from "@/lib/types";
 import { streamPdfResponse } from "@/lib/pdf-response";
+import {
+  authenticateOwnerAgentConnection,
+  recheckOwnerAgentConnection,
+  revokeOwnerAgentConnection,
+} from "@/lib/owner-agent-connections";
 
 export interface OwnerAgentContext {
   kind: "owner";
   userId: string;
   companyId: string;
   expiresAt: number;
+  connectionId?: string;
 }
 export type McpAuthContext =
   OwnerAgentContext | { kind: "counterparty"; agent: AgentContext };
@@ -28,6 +34,7 @@ const ownerTicketSchema = z.object({
   company_id: z.uuid(),
   document_id: z.uuid(),
   receipt_id: z.uuid(),
+  connection_id: z.uuid().optional(),
   exp: z.number().int(),
 });
 type OwnerTicket = z.infer<typeof ownerTicketSchema>;
@@ -60,6 +67,14 @@ export async function requireOwnerAgentToken(
       "This tool requires an owner token",
       "owner_required",
     );
+  if (token.startsWith("po_")) {
+    const connection = await authenticateOwnerAgentConnection(token);
+    return {
+      kind: "owner",
+      ...connection,
+      expiresAt: Number.POSITIVE_INFINITY,
+    };
+  }
   const owner = await requireOwner(
     new Request("https://puente.internal/owner", {
       headers: { Authorization: `Bearer ${token}` },
@@ -93,6 +108,7 @@ async function recheckOwner(
   userId: string,
   companyId: string,
   expiresAt: number,
+  connectionId?: string,
 ) {
   if (expiresAt <= Date.now())
     throw new ApiError(401, "Owner access has expired", "unauthorized");
@@ -110,9 +126,31 @@ async function recheckOwner(
       "Owner membership is no longer active",
       "forbidden",
     );
+  if (connectionId)
+    await recheckOwnerAgentConnection({ userId, companyId }, connectionId);
+}
+export async function recheckOwnerAgentContext(ctx: OwnerAgentContext) {
+  await recheckOwner(
+    ctx.userId,
+    ctx.companyId,
+    ctx.expiresAt,
+    ctx.connectionId,
+  );
+}
+export async function revokeCurrentOwnerAgentConnection(
+  ctx: OwnerAgentContext,
+) {
+  if (!ctx.connectionId)
+    throw new ApiError(
+      403,
+      "Only a durable owner connection can revoke its own access.",
+      "owner_connection_required",
+    );
+  await recheckOwnerAgentContext(ctx);
+  return revokeOwnerAgentConnection(ctx, ctx.connectionId);
 }
 export async function listOwnerDocuments(ctx: OwnerAgentContext) {
-  await recheckOwner(ctx.userId, ctx.companyId, ctx.expiresAt);
+  await recheckOwnerAgentContext(ctx);
   const data = await dashboard(ctx.companyId);
   return {
     access_scope: "owner",
@@ -124,7 +162,7 @@ export async function listOwnerDocuments(ctx: OwnerAgentContext) {
   };
 }
 export async function listOwnerRequests(ctx: OwnerAgentContext) {
-  await recheckOwner(ctx.userId, ctx.companyId, ctx.expiresAt);
+  await recheckOwnerAgentContext(ctx);
   const data = await dashboard(ctx.companyId);
   return { access_scope: "owner", requests: data.requests };
 }
@@ -132,7 +170,7 @@ export async function ownerRequestStatus(
   ctx: OwnerAgentContext,
   requestId: string,
 ) {
-  await recheckOwner(ctx.userId, ctx.companyId, ctx.expiresAt);
+  await recheckOwnerAgentContext(ctx);
   const { data, error } = await admin()
     .from("requests")
     .select("*")
@@ -180,6 +218,7 @@ async function ownerAudit(
   receiptId: string,
   userId: string,
   stage: "issued" | "downloaded",
+  connectionId?: string,
 ) {
   const { error } = await admin()
     .from("access_events")
@@ -194,6 +233,7 @@ async function ownerAudit(
         receipt_id: receiptId,
         user_id: userId,
         delivery_stage: stage,
+        ...(connectionId ? { connection_id: connectionId } : {}),
       },
     });
   assertDb(error);
@@ -202,7 +242,7 @@ export async function getOwnerDocument(
   ctx: OwnerAgentContext,
   documentId: string,
 ) {
-  await recheckOwner(ctx.userId, ctx.companyId, ctx.expiresAt);
+  await recheckOwnerAgentContext(ctx);
   const { data, error } = await admin()
     .from("documents")
     .select("*")
@@ -223,6 +263,7 @@ export async function getOwnerDocument(
     owner_company_id: ctx.companyId,
     receiver_company_id: ctx.companyId,
     owner_user_id: ctx.userId,
+    ...(ctx.connectionId ? { owner_connection_id: ctx.connectionId } : {}),
     bridge_id: null,
     request_id: null,
     purpose: "Internal company document administration",
@@ -230,16 +271,14 @@ export async function getOwnerDocument(
     original_pdf: true,
   };
   const signed = signReceipt(payload);
-  const { error: receiptError } = await admin()
-    .from("receipts")
-    .insert({
-      id: receiptId,
-      company_id: ctx.companyId,
-      receiver_company_id: ctx.companyId,
-      payload,
-      signature: signed.signature,
-      public_key: signed.public_key,
-    });
+  const { error: receiptError } = await admin().from("receipts").insert({
+    id: receiptId,
+    company_id: ctx.companyId,
+    receiver_company_id: ctx.companyId,
+    payload,
+    signature: signed.signature,
+    public_key: signed.public_key,
+  });
   assertDb(receiptError);
   const exp = Math.min(Date.now() + 60_000, ctx.expiresAt);
   const ticket = createOwnerTicket({
@@ -249,12 +288,21 @@ export async function getOwnerDocument(
     company_id: ctx.companyId,
     document_id: doc.id,
     receipt_id: receiptId,
+    ...(ctx.connectionId ? { connection_id: ctx.connectionId } : {}),
     exp,
   });
   const base = (
     process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
   ).replace(/\/$/, "");
-  await ownerAudit(ctx.companyId, doc.id, receiptId, ctx.userId, "issued");
+  await ownerAudit(
+    ctx.companyId,
+    doc.id,
+    receiptId,
+    ctx.userId,
+    "issued",
+    ctx.connectionId,
+  );
+  await recheckOwnerAgentContext(ctx);
   return {
     status: "delivered",
     access_scope: "owner",
@@ -279,7 +327,12 @@ export async function downloadOwnerOriginal(
       "Download ticket belongs to a different document",
       "forbidden",
     );
-  await recheckOwner(claims.user_id, claims.company_id, claims.exp);
+  await recheckOwner(
+    claims.user_id,
+    claims.company_id,
+    claims.exp,
+    claims.connection_id,
+  );
   const { data: receipt, error } = await admin()
     .from("receipts")
     .select("payload")
@@ -293,7 +346,8 @@ export async function downloadOwnerOriginal(
     receipt.payload.scope !== "owner" ||
     receipt.payload.owner_user_id !== claims.user_id ||
     receipt.payload.document_id !== documentId ||
-    receipt.payload.bridge_id !== null
+    receipt.payload.bridge_id !== null ||
+    (receipt.payload.owner_connection_id ?? undefined) !== claims.connection_id
   )
     throw new ApiError(403, "Receipt is outside owner scope", "forbidden");
   const { data: doc, error: docError } = await admin()
@@ -316,13 +370,25 @@ export async function downloadOwnerOriginal(
     doc.sha256 !== receipt.payload.sha256
   )
     throw new ApiError(409, "Original file integrity check failed");
-  await recheckOwner(claims.user_id, claims.company_id, claims.exp);
+  await recheckOwner(
+    claims.user_id,
+    claims.company_id,
+    claims.exp,
+    claims.connection_id,
+  );
   await ownerAudit(
     claims.company_id,
     documentId,
     claims.receipt_id,
     claims.user_id,
     "downloaded",
+    claims.connection_id,
+  );
+  await recheckOwner(
+    claims.user_id,
+    claims.company_id,
+    claims.exp,
+    claims.connection_id,
   );
   const response = streamPdfResponse(bytes, doc.title, doc.sha256);
   response.headers.set("Referrer-Policy", "no-referrer");
