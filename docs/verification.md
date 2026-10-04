@@ -18,6 +18,12 @@ Security advisors returned ten informational entries for intentionally service-o
 
  Browser-to-browser transfer needs the source online. There is no hosted TURN relay and no cloud-only Drive OAuth integration; synchronized Drive folders work through the local connector.
 
+## Bilateral company roles
+
+On 2026-10-04, `scripts/bilateral-verify.ts --execute` passed five integration groups against production. Two MCP clients retained their owner credentials in their Authorization headers and used explicit bridge-token arguments to request from each other through the same bridge. Both directions required the actual document owner to approve, rejected self-approval and foreign metadata/sharing changes, and accepted requests with no reciprocal offers. Each PDF arrived over WebRTC with its original SHA-256. Returning to an owner call preserved each company’s own scope. Temporary records and users were removed; no notification email was sent by this test.
+
+Application commit `424c1c1`, deployed as `puente-1l57d9jst`, makes the requesting company explicit when generating a code and distinguishes incoming decisions from outgoing status. The live agent guide and copied instructions describe both roles and the independent credential lifetimes. Local and Vercel production builds and ESLint passed. The authenticated production UI showed both code directions, an incoming request with Approve/Decline, and an outgoing request with status only. The temporary browser verification account and its fixtures were subsequently removed.
+
 ## Historical prototype evidence
 
 The following observations are retained as history. Do not run its seed or storage-based harnesses against the current MVP database.
