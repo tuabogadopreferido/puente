@@ -128,7 +128,7 @@ The connection's creator will revoke it under **Connect my agent** by selecting 
 
 A Supabase Auth access JWT remains supported for legacy owner MCP clients, with its normal session expiry. Durable owner credentials are the preferred agent connection. The same `list_documents`, `get_document`, `request_document` and `get_request_status` tools will recognize the verified scope: owners will operate on their own company; counterparty bridge tokens will operate through a bilateral bridge. Offers will remain empty when omitted, and any offered IDs must belong to the requester.
 
-Owner-only tools include `prepare_document_upload`, `complete_document_upload`, `create_bridge`, `issue_access_code`, `revoke_bridge`, `list_requests` and `decide_request`. Only a durable owner credential can call `revoke_owner_access`. Counterparty bridge tokens cannot call owner-only tools.
+Owner-only tools include `prepare_document_upload`, `complete_document_upload`, `correct_document_classification`, `create_bridge`, `issue_access_code`, `revoke_bridge`, `list_requests` and `decide_request`. Only a durable owner credential can call `revoke_owner_access`. Counterparty bridge tokens cannot call owner-only tools.
 
 ### Upload as the company owner
 
@@ -138,9 +138,25 @@ The dashboard's **Upload document** button will add originals to your own compan
 2. The agent will send the unchanged PDF as the raw binary body of a `PUT` to that returned signed URL, using the returned headers. The signed URL supplies upload authorization; it needs no `Authorization` or `apikey` header. PDF bytes and base64 will never be sent to MCP or JSON application routes.
 3. It will call `complete_document_upload({uploadId})` with the same owner credential and read `{document, notice}`. An owner-review notice will be presented as such. After an uncertain upload or completion response, it will retry completion with the same `uploadId`; completed sessions will return the same document.
 
+### Correct classification through MCP
+
+Your owner agent will call `correct_document_classification({document_id, document_type?, sensitive?, expires_at?, token?})` with its durable `po_` credential or legacy owner JWT. The `token` argument will be optional when the credential is in the Authorization header. The server will recheck active owner membership and credential revocation; a counterparty bridge token will not authorize a correction.
+
+Each call will include at least one correction field; unknown fields will be rejected. `expires_at` will accept a valid calendar date in `YYYY-MM-DD` form, or `null` to clear it. Omitting a field will preserve its value, except that sensitivity will follow the effective document type:
+
+| Effective document type | Sensitivity |
+| --- | --- |
+| `balance_sheet`, `income_statement`, `tax_return` | Always `true` |
+| `tax_status`, `tax_compliance`, `incorporation`, `power_of_attorney`, `bank_cover`, `proof_of_address`, `repse`, `representative_id` | Always `false` |
+| `other` | Owner-selected `sensitive`; the current value will be retained if omitted |
+
+For example, the agent will use `{document_id: DOCUMENT_ID, document_type: "tax_compliance", expires_at: "2026-12-31"}` to correct a compliance opinion, or `{document_id: DOCUMENT_ID, expires_at: null}` to clear an expiry. `DOCUMENT_ID` represents the ID returned by `list_documents`.
+
+The result will contain `id`, `title`, `document_type`, `sensitive`, `expires_at` and `classification_source: "owner_reviewed"`. The original PDF bytes and SHA-256 will remain unchanged. This will record an owner correction, not a new AI classification.
+
 ### Browser REST administration
 
-The browser will use its **Supabase Auth JWT** for REST owner routes, including the following connection-management endpoints. A durable `po_` credential will be used with MCP, not substituted for the browser JWT on these routes.
+The browser will use its **Supabase Auth JWT** for connection management, uploads and the other owner REST administration routes below. Those routes will not accept a durable `po_` credential. Classification correction is the exception: `PATCH /api/documents/{id}` will accept either owner credential and the same strict correction fields as MCP, without `document_id` or `token` in the body.
 
 | Method and path | Result |
 | --- | --- |

@@ -12,6 +12,75 @@ const ownerConnection = {
   description:
     "Creator-scoped owner connection metadata. No expiry or recoverable raw token.",
 };
+const classificationProperties: Record<string, Schema> = {
+  document_type: {
+    type: "string",
+    enum: [
+      "tax_status",
+      "tax_compliance",
+      "incorporation",
+      "power_of_attorney",
+      "bank_cover",
+      "proof_of_address",
+      "repse",
+      "representative_id",
+      "balance_sheet",
+      "income_statement",
+      "tax_return",
+      "other",
+    ],
+  },
+  sensitive: {
+    type: "boolean",
+    description:
+      "Normalized from the effective type: balance_sheet, income_statement and tax_return always true; tax_status, tax_compliance, incorporation, power_of_attorney, bank_cover, proof_of_address, repse and representative_id always false. For other, the supplied value applies, or the current value is retained if omitted.",
+  },
+  expires_at: {
+    type: ["string", "null"],
+    format: "date",
+    pattern: "^\\d{4}-\\d{2}-\\d{2}$",
+    description:
+      "Valid calendar date YYYY-MM-DD; null clears the expiry. Omission preserves it.",
+  },
+};
+const classificationCorrectionInput: Schema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["document_id"],
+  anyOf: [
+    { required: ["document_type"] },
+    { required: ["sensitive"] },
+    { required: ["expires_at"] },
+  ],
+  properties: {
+    document_id: uuid,
+    ...classificationProperties,
+    token: {
+      type: "string",
+      description:
+        "Optional owner credential when not supplied in Authorization: Bearer. Accepts durable po_ or a legacy owner JWT; never a counterparty bridge token.",
+    },
+  },
+};
+const ownerReviewedDocument: Schema = {
+  type: "object",
+  required: [
+    "id",
+    "title",
+    "document_type",
+    "sensitive",
+    "expires_at",
+    "classification_source",
+  ],
+  properties: {
+    id: uuid,
+    title: { type: "string" },
+    ...classificationProperties,
+    classification_source: { type: "string", const: "owner_reviewed" },
+  },
+  description:
+    "Updated owner-reviewed metadata only. Original PDF bytes and SHA-256 remain unchanged.",
+};
 const tokenSecurity = [{ bearerAuth: [] }];
 const ownerSecurity = [{ ownerAuth: [] }];
 const jsonBody = (schema: Schema) => ({
@@ -146,7 +215,20 @@ export async function GET() {
       post: {
         summary: "Streamable HTTP MCP for owner agents and counterparties",
         description:
-          "The preferred owner credential is a durable po_ bearer created through Connect my agent. It has no scheduled expiry, is stored hashed and is bound to its creator/company. Legacy owner Supabase JWTs remain supported with their normal expiry. Counterparty bridge tokens last up to 24 hours. Initialization, discovery and exchange_code can start without a bearer; protected tools will verify a bearer header or their token argument. Owner agents will call prepare_document_upload({filename,size}), PUT raw unchanged PDF bytes to its returned upload_url with the returned headers and no Authorization/apikey, then call complete_document_upload({uploadId}). No base64 or PDF bodies will be sent to MCP. revoke_owner_access will revoke only the durable credential used for that call and its internal owner-download tickets; bridges and counterparty download permissions remain unchanged.",
+          "The preferred owner credential is a durable po_ bearer created through Connect my agent. It has no scheduled expiry, is stored hashed and is bound to its creator/company. Legacy owner Supabase JWTs remain supported with their normal expiry. Counterparty bridge tokens last up to 24 hours. Initialization, discovery and exchange_code can start without a bearer; protected tools will verify a bearer header or their token argument. Owner agents will call prepare_document_upload({filename,size}), PUT raw unchanged PDF bytes to its returned upload_url with the returned headers and no Authorization/apikey, then call complete_document_upload({uploadId}). No base64 or PDF bodies will be sent to MCP. correct_document_classification({document_id,document_type?,sensitive?,expires_at?,token?}) will accept at least one correction, reject unknown fields, and return owner-reviewed metadata without altering original bytes or SHA-256. It accepts only an owner po_ credential or legacy owner JWT, with active membership and revocation rechecked. See x-mcp-tools for the input and output schemas. revoke_owner_access will revoke only the durable credential used for that call and its internal owner-download tickets; bridges and counterparty download permissions remain unchanged.",
+        "x-mcp-tools": [
+          {
+            name: "correct_document_classification",
+            description:
+              "Correct an owned document with a durable owner credential or legacy owner JWT. Active owner membership and revocation are checked on each call; counterparty bridge credentials cannot authorize it. A correction changes classification metadata only and records owner_reviewed, not a new AI classification.",
+            inputSchema: {
+              $ref: "#/components/schemas/CorrectDocumentClassificationInput",
+            },
+            outputSchema: {
+              $ref: "#/components/schemas/OwnerReviewedDocument",
+            },
+          },
+        ],
         security: [
           {},
           { ownerAgentAuth: [] },
@@ -441,31 +523,35 @@ export async function GET() {
     },
     "/api/documents/{id}": {
       parameters: idParameter,
-      patch: op(
-        "Correct owner document classification and explicitly mark it owner-reviewed",
-        object({
-          document_type: {
-            type: "string",
-            enum: [
-              "tax_status",
-              "tax_compliance",
-              "incorporation",
-              "power_of_attorney",
-              "bank_cover",
-              "proof_of_address",
-              "repse",
-              "representative_id",
-              "balance_sheet",
-              "income_statement",
-              "tax_return",
-              "other",
-            ],
+      patch: {
+        ...op(
+          "Correct owner document classification and explicitly mark it owner-reviewed",
+          {
+            ...object(classificationProperties),
+            minProperties: 1,
+            additionalProperties: false,
           },
-          sensitive: { type: "boolean" },
-          expires_at: { type: ["string", "null"], format: "date" },
-        }),
-        true,
-      ),
+          true,
+        ),
+        description:
+          "Accepts a durable owner po_ credential or legacy owner JWT in Authorization: Bearer, unlike JWT-only connection management and browser upload routes. The server rechecks active owner membership and revocation. At least one correction is required; unknown fields are rejected. Financial types are always sensitive, onboarding types always non-sensitive, and other permits an owner-selected value. A valid YYYY-MM-DD expiry or null will set or clear expiry. Original PDF bytes and SHA-256 remain unchanged.",
+        security: [{ ownerAgentAuth: [] }, { ownerAuth: [] }],
+        responses: {
+          "200": {
+            description: "Updated owner-reviewed metadata",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/OwnerReviewedDocument" },
+              },
+            },
+          },
+          "409": {
+            description:
+              "Concurrent classification change; reload before retrying",
+          },
+          ...errors,
+        },
+      },
     },
     "/api/bridges": {
       post: op(
@@ -637,9 +723,9 @@ export async function GET() {
     openapi: "3.1.0",
     info: {
       title: "Puente API",
-      version: "1.2.0",
+      version: "1.3.0",
       description:
-        "Private corporate originals with separate authorization scopes. Browser owner REST administration requires a verified Supabase Auth JWT. MCP accepts durable owner po_ credentials (preferred, no scheduled expiry), legacy owner JWTs or 24-hour counterparty bridge tokens. Active ownership comes from the database. Download tickets last up to 60 seconds and recheck their own scope; revoking an owner connection does not revoke a bridge. All demo data is fictional.",
+        "Private corporate originals with separate authorization scopes. Browser owner REST administration requires a verified Supabase Auth JWT, except classification PATCH also accepts a durable owner credential. MCP accepts durable owner po_ credentials (preferred, no scheduled expiry), legacy owner JWTs or 24-hour counterparty bridge tokens. Active ownership comes from the database. Download tickets last up to 60 seconds and recheck their own scope; revoking an owner connection does not revoke a bridge. All demo data is fictional.",
     },
     servers: [
       {
@@ -649,6 +735,10 @@ export async function GET() {
       },
     ],
     components: {
+      schemas: {
+        CorrectDocumentClassificationInput: classificationCorrectionInput,
+        OwnerReviewedDocument: ownerReviewedDocument,
+      },
       securitySchemes: {
         bearerAuth: {
           type: "http",
@@ -661,7 +751,7 @@ export async function GET() {
           scheme: "bearer",
           bearerFormat: "po_ opaque owner credential",
           description:
-            "MCP owner access only. Created explicitly through Connect my agent and returned once; stored hashed, scoped to creator/company and valid without scheduled expiry while owner membership remains active. The creator can revoke it through JWT-authenticated management, or the agent can call revoke_owner_access. It is not a counterparty bridge credential or a replacement for browser REST JWT authentication.",
+            "Owner MCP and classification PATCH access. Created explicitly through Connect my agent and returned once; stored hashed, scoped to creator/company and valid without scheduled expiry while owner membership remains active. The creator can revoke it through JWT-authenticated management, or the agent can call revoke_owner_access. It is not a counterparty bridge credential and cannot replace the JWT on connection-management, browser-upload or other JWT-only REST routes.",
         },
         ownerAuth: {
           type: "http",

@@ -26,13 +26,14 @@ The durable token has prefix po_ and no scheduled expiration. The server stores 
 
 The creator will revoke a connection in Connect my agent using Revoke access, then Revoke access now. The connected agent can call revoke_owner_access to revoke only itself. Revocation blocks that owner credential and internal owner-download tickets issued to it. Existing bridges, counterparty bridge tokens and counterparty download permissions remain unchanged.
 
-Legacy Supabase Auth access JWTs remain supported by owner MCP tools with their normal expiry; durable po_ access is preferred for an agent. Caller-supplied company IDs or user metadata never establish ownership. Browser REST administration still requires a Supabase Auth JWT, not a po_ credential.
+Legacy Supabase Auth access JWTs remain supported by owner MCP tools with their normal expiry; durable po_ access is preferred for an agent. Caller-supplied company IDs or user metadata never establish ownership. Connection management, browser uploads and other owner REST administration routes still require a Supabase Auth JWT. Classification PATCH is the exception and accepts either owner credential.
 
 The same list_documents, get_document, request_document and get_request_status tools will recognize verified owner scope. Owners will list and retrieve their own company's originals; owner receipts identify scope: owner and have no external bridge.
 
 Owner-only tools:
 - prepare_document_upload {filename,size,token?} will return a private signed upload_url, uploadId, method PUT, content_type and headers for an original PDF up to 20 MiB and 80 pages.
 - complete_document_upload {uploadId,token?} will validate and classify the uploaded original, returning {document,notice}. Repeating successful completion will return the same document.
+- correct_document_classification {document_id,document_type?,sensitive?,expires_at?,token?} will correct metadata for an owned document and mark classification_source: owner_reviewed. At least one correction field is required; unknown fields are rejected. See the correction contract below.
 - create_bridge {token,counterparty_id,hours} will create a bilateral connection. Default lifetime: 24 hours.
 - issue_access_code {token,bridge_id,actor_company_id?} will issue a one-use code valid for up to 15 minutes.
 - revoke_bridge {token,bridge_id} will block future counterpart requests and previously issued counterpart download tickets.
@@ -59,12 +60,15 @@ POST /api/owner/documents/{id}/download
 POST /api/documents/upload/init {filename,size} (JSON metadata; PDF up to 20 MiB / 20,971,520 bytes)
 POST /api/documents/upload/complete {uploadId}
 POST /api/documents/upload (legacy multipart form field file; PDF up to 4 MiB / 4,194,304 bytes)
-PATCH /api/documents/{id} {document_type?,sensitive?,expires_at?}
 POST /api/bridges {counterparty_id,expires_in_hours?}
 POST /api/bridges/{id}/code {actor_company_id?}
 POST /api/bridges/{id}/revoke
 POST /api/requests/{id}/decision {action,create_rule?,manual_response?}
 POST /api/invitations {email,company_name,purpose_id,offered_document_ids?}
+
+Owner classification REST (durable po_ or owner JWT in Authorization: Bearer):
+PATCH /api/documents/{id} {document_type?,sensitive?,expires_at?}
+At least one correction field is required; unknown fields are rejected. It uses the same normalization and owner-reviewed result as the MCP correction tool.
 
 Invitations:
 GET /api/invitations/inspect?token=SIGNED_TOKEN returns only company names, purpose name, offered-document count, status and expiry.
@@ -72,6 +76,16 @@ POST /api/invitations/accept {token} requires a Supabase Auth bearer with the in
 
 ## Uploading originals through MCP
 Your company agent will call prepare_document_upload {filename,size} using its owner credential. It will PUT the unchanged original PDF as raw binary directly to the returned upload_url using only the returned headers. The signed URL authorizes this upload; no Authorization or apikey header is needed. It will then call complete_document_upload {uploadId} using the same owner credential. PDF bytes, base64 and remote-file URLs will never be passed as MCP tool arguments. If upload or completion has an uncertain result, the agent will retry completion with the same uploadId. It will honor the returned notice when AI classification requires owner review.
+
+## Correcting classification through MCP
+The owner agent will call correct_document_classification {document_id,document_type?,sensitive?,expires_at?,token?} with a durable po_ credential or legacy owner JWT. The optional token can be omitted when Authorization: Bearer carries that credential. The server will recheck active owner membership and revocation. Counterparty bridge tokens cannot correct documents.
+
+Include at least one of document_type, sensitive or expires_at; unknown fields will be rejected. expires_at will accept a valid calendar date in YYYY-MM-DD form or null to clear it. Omitted values will be retained, except sensitivity will be normalized from the effective document type:
+- balance_sheet, income_statement and tax_return will always be sensitive.
+- tax_status, tax_compliance, incorporation, power_of_attorney, bank_cover, proof_of_address, repse and representative_id will always be non-sensitive.
+- other will use the owner's sensitive value, retaining the current value if omitted.
+
+A call with {document_id,document_type:"tax_compliance",expires_at:"2026-12-31"} will correct a compliance opinion. {document_id,expires_at:null} will clear an expiry. The returned object will contain id, title, document_type, sensitive, expires_at and classification_source:"owner_reviewed". The original PDF bytes and SHA-256 will remain unchanged. Report this as owner review, not as a new AI classification.
 
 ## Uploading originals through browser REST
 Use the direct upload flow for PDFs up to 20 MiB and 80 pages. Both application calls will require the same verified owner Supabase Auth JWT:
