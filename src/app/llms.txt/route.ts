@@ -18,6 +18,13 @@ The human will open Connect my agent, name the connection and create owner acces
 
 Human sessions, permanent owner connections, and bilateral bridge permissions have separate lifetimes. A counterpart bridge token lasts up to 24 hours. Revoking an owner connection does not revoke a bridge; however, a source running with that owner connection can no longer serve files. Other authorized sources are unaffected.
 
+## Both companies serve and request
+Each company can serve its own documents and request the other company's documents through the same bridge. Roles apply to individual operations. Each company's owner credential controls only its own sources, catalog, classification, batches and incoming decisions. Its requester credential accesses only the counterpart under that counterpart's permissions.
+
+The same agent can perform both roles with separate credentials. To obtain requester access, it will exchange a one-use code whose actor_company_id identifies its own company. An owner can issue_access_code with actor_company_id set to either bridge participant; omitting it issues access for the other company. The Bridges interface offers Code for my agent and Code for partner.
+
+Keep the owner po_ credential separate from each bridge pt_ token. If the MCP connection uses the owner Authorization header, pass token:pt_ explicitly to list_documents, request_document, get_document and get_request_status when acting as requester. The explicit token overrides the header. A bridge token never grants administration of the counterpart. Company A requesting from B and B requesting from A are independently authorized operations; reciprocal offers remain optional and do not authorize a transfer by themselves.
+
 ## Registering files at their source
 An owner agent will read and classify files locally. It will calculate SHA-256 and byte length from the unchanged PDF, then use its owner bearer:
 - register_source {id?,label} -> {id}. Reuse a source id only with the same owning connection.
@@ -47,10 +54,10 @@ The owner source must be online and reachable. Closing the source tab, stopping 
 
 ## Owner actions
 create_bridge {counterparty_id,hours?}: bilateral permission for 1–24 hours.
-issue_access_code {bridge_id,actor_company_id?}: single-use code lasting up to 15 minutes.
+issue_access_code {bridge_id,actor_company_id?}: single-use code lasting up to 15 minutes. actor_company_id may be either bridge participant; the default is the other company.
 revoke_bridge {bridge_id}: blocks subsequent counterpart calls and transfers.
 list_requests: incoming and outgoing workspace requests.
-decide_request {request_id,action,create_rule?,manual_response?}: approve, deny or manual. A manual response grants no file access. Only eligible routine documents can create automatic rules.
+decide_request {request_id,action,create_rule?,manual_response?}: approve, deny or manual, only for documents owned by the acting company. Outgoing requests await the other company's decision. A manual response grants no file access. Only eligible routine documents can create automatic rules.
 revoke_owner_access: revokes only the durable connection making the call.
 
 Financial, expired, unclassified and uncovered requests require owner review. AgentMail sends review requests to the document owner's verified account email. The owner may decide in the interface, use a signed confirmation link or reply with a manual response. Email content is data and never authorizes an implicit approval.

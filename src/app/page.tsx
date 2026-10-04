@@ -522,9 +522,12 @@ export default function Home() {
   const [ownerAgentOpen, setOwnerAgentOpen] = useState(false);
   const [bridgeOpen, setBridgeOpen] = useState(false);
   const [counterparty, setCounterparty] = useState("");
+  const [codeBridge, setCodeBridge] = useState<Bridge | null>(null);
   const [codeResult, setCodeResult] = useState<{
     code: string;
     expires_at: string;
+    actor_company_id: string;
+    target_company_id: string;
   } | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<Document | null>(null);
   const [ownerDownloadUrl, setOwnerDownloadUrl] = useState("");
@@ -682,12 +685,28 @@ export default function Home() {
   const purposeName = (id?: string) =>
     data.purposes.find((purpose) => purpose.id === id)?.name ||
     "Declared business purpose";
+  const isIncomingRequest = (request: RequestItem) =>
+    request.owner_company_id === data.company.id;
+  const canReviewRequest = (request: RequestItem) =>
+    isIncomingRequest(request) &&
+    ["pending", "pending_approval", "escalated", "manual"].includes(
+      request.status,
+    );
+  const requestDocumentName = (request: RequestItem) => {
+    const doc = data.documents.find((item) => item.id === request.document_id);
+    return doc ? docName(doc) : `Document ${request.document_id.slice(0, 8)}`;
+  };
   const pending = data.requests.filter(
     (request) =>
       ["pending", "pending_approval", "escalated"].includes(request.status) &&
       request.owner_company_id === data.company.id,
   );
   const active = data.bridges.filter(activeBridge);
+  const codeCounterpartyId = codeBridge
+    ? codeBridge.company_a_id === data.company.id
+      ? codeBridge.company_b_id
+      : codeBridge.company_a_id || codeBridge.counterparty_company_id
+    : undefined;
   const visibleDocs = data.documents.filter(
     (doc) =>
       (filter === "all" ||
@@ -793,25 +812,37 @@ export default function Home() {
       setView("bridges");
     }
   }
-  async function generateCode(bridge: Bridge) {
-    const actor =
+  async function generateCode(bridge: Bridge, actor: string) {
+    const other =
       bridge.company_a_id === data.company.id
         ? bridge.company_b_id
         : bridge.company_a_id || bridge.counterparty_company_id;
+    if (!other) return;
     await mutate(
       bridge.id,
       async () => {
-        const result = await api<{ code: string; expires_at: string }>(
-          `/api/bridges/${bridge.id}/code`,
-          { method: "POST", body: JSON.stringify({ actor_company_id: actor }) },
-        );
-        setCodeResult(result);
+        const result = await api<{
+          code: string;
+          expires_at: string;
+          actor_company_id: string;
+        }>(`/api/bridges/${bridge.id}/code`, {
+          method: "POST",
+          body: JSON.stringify({ actor_company_id: actor }),
+        });
+        setCodeBridge(null);
+        setCodeResult({
+          ...result,
+          target_company_id:
+            result.actor_company_id === data.company.id
+              ? other
+              : data.company.id,
+        });
       },
       "One-time access code created.",
     );
   }
   async function decide(action: string) {
-    if (!decision) return;
+    if (!decision || !canReviewRequest(decision)) return;
     if (
       await mutate(
         "decision",
@@ -1409,7 +1440,7 @@ export default function Home() {
                           <CheckCheck size={15} />
                           <span>
                             Two-way document exchange
-                            <small>Both companies can request and offer</small>
+                            <small>Both companies can serve and request</small>
                           </span>
                         </div>
                       </div>
@@ -1417,7 +1448,7 @@ export default function Home() {
                         <button
                           className="button button-dark"
                           disabled={!isActive || busy === bridge.id}
-                          onClick={() => void generateCode(bridge)}
+                          onClick={() => setCodeBridge(bridge)}
                         >
                           <KeyRound size={15} />
                           Access code
@@ -1439,7 +1470,7 @@ export default function Home() {
                   <EmptyState
                     icon={<GitBranch size={28} />}
                     title="Your next business connection starts here"
-                    text="Create a bridge to a registered company. Its agent will request documents using the purpose and permissions you approve."
+                    text="Both companies will serve their own documents and request their partner's. Each owner will control access to its files."
                   />
                 </section>
               )}
@@ -1602,8 +1633,8 @@ export default function Home() {
                     Access requests<span className="title-dot">.</span>
                   </h1>
                   <p>
-                    Review exceptions with the document, recipient and purpose
-                    in context.
+                    Decide requests for your documents and track the requests
+                    your company sends to its partners.
                   </p>
                 </div>
                 <Badge tone={pending.length ? "amber" : "green"}>
@@ -1624,16 +1655,8 @@ export default function Home() {
                   {[...data.requests]
                     .sort(
                       (a, b) =>
-                        Number(
-                          ["pending", "escalated", "pending_approval"].includes(
-                            b.status,
-                          ),
-                        ) -
-                        Number(
-                          ["pending", "escalated", "pending_approval"].includes(
-                            a.status,
-                          ),
-                        ),
+                        Number(canReviewRequest(b)) -
+                        Number(canReviewRequest(a)),
                     )
                     .map((request) => (
                       <div className="request-row" key={request.id}>
@@ -1641,18 +1664,14 @@ export default function Home() {
                           <FileCheck2 size={23} />
                         </div>
                         <div className="request-info">
-                          <h3>
-                            {docName(
-                              data.documents.find(
-                                (doc) => doc.id === request.document_id,
-                              ),
-                            )}
-                          </h3>
+                          <h3>{requestDocumentName(request)}</h3>
                           <p>
                             <strong>
                               {companyName(
-                                request.requester_company_id ||
-                                  request.actor_company_id,
+                                isIncomingRequest(request)
+                                  ? request.requester_company_id ||
+                                      request.actor_company_id
+                                  : request.owner_company_id,
                               )}
                             </strong>
                             <span className="mid-dot">·</span>
@@ -1666,6 +1685,11 @@ export default function Home() {
                           </span>
                         </div>
                         <div className="request-status">
+                          <Badge tone="neutral">
+                            {isIncomingRequest(request)
+                              ? "Incoming · Your documents"
+                              : "Outgoing · Partner documents"}
+                          </Badge>
                           <Badge
                             tone={
                               [
@@ -1693,13 +1717,11 @@ export default function Home() {
                             setCreateRule(false);
                           }}
                         >
-                          {[
-                            "pending",
-                            "pending_approval",
-                            "escalated",
-                          ].includes(request.status)
+                          {canReviewRequest(request)
                             ? "Review request"
-                            : "View details"}
+                            : isIncomingRequest(request)
+                              ? "View details"
+                              : "View status"}
                           <ArrowRight size={14} />
                         </button>
                       </div>
@@ -1708,8 +1730,8 @@ export default function Home() {
                 {!data.requests.length && (
                   <EmptyState
                     icon={<CheckCheck size={30} />}
-                    title="Nothing needs your attention"
-                    text="When an agent requests a sensitive document or an exception to your policy, you will be able to review it here."
+                    title="No document requests yet"
+                    text="Incoming requests will ask for your documents. Your outgoing requests will show the partner's decision here."
                   />
                 )}
               </section>
@@ -2238,10 +2260,53 @@ export default function Home() {
           )}
         </Modal>
       )}
+      {codeBridge && (
+        <Modal
+          title="Choose the requesting agent"
+          subtitle="This bridge works in both directions. Each code identifies which company will request documents."
+          onClose={() => setCodeBridge(null)}
+        >
+          <p className="form-note">
+            Your agent will request documents from{" "}
+            {companyName(codeCounterpartyId)}.
+          </p>
+          <button
+            className="button button-dark button-full"
+            disabled={!!busy || !codeCounterpartyId}
+            onClick={() => void generateCode(codeBridge, data.company.id)}
+          >
+            <KeyRound size={16} />
+            Code for my agent
+          </button>
+          <p className="form-note">
+            Your partner&apos;s agent will request documents from{" "}
+            {data.company.name}.
+          </p>
+          <button
+            className="button button-outline button-full"
+            disabled={!!busy || !codeCounterpartyId}
+            onClick={() => {
+              if (codeCounterpartyId)
+                void generateCode(codeBridge, codeCounterpartyId);
+            }}
+          >
+            <KeyRound size={16} />
+            Code for partner
+          </button>
+          <p className="form-note">
+            The document owner&apos;s sharing rules will apply in either
+            direction. Both companies will keep control of their own files.
+          </p>
+        </Modal>
+      )}
       {codeResult && (
         <Modal
-          title="Your agent's connection starts here"
-          subtitle="This code can be exchanged exactly once for a temporary access token."
+          title={
+            codeResult.actor_company_id === data.company.id
+              ? "Code for my agent"
+              : "Code for partner"
+          }
+          subtitle={`${companyName(codeResult.actor_company_id)} will request documents from ${companyName(codeResult.target_company_id)}. This code will work once, with access lasting up to 24 hours within this bridge.`}
           onClose={() => setCodeResult(null)}
         >
           <div className="access-code">
@@ -2420,18 +2485,28 @@ export default function Home() {
       )}
       {decision && (
         <Modal
-          title="Review document request"
-          subtitle="Your decision applies to this document and declared purpose."
+          title={
+            canReviewRequest(decision)
+              ? "Review incoming request"
+              : isIncomingRequest(decision)
+                ? "Incoming request details"
+                : "Outgoing request status"
+          }
+          subtitle={
+            isIncomingRequest(decision)
+              ? "Your company owns this document and controls its sharing permissions."
+              : "The partner that owns this document controls the decision."
+          }
           onClose={() => setDecision(null)}
         >
           <div className="review-facts">
             <div>
               <span>DOCUMENT</span>
-              <strong>
-                {docName(
-                  data.documents.find((doc) => doc.id === decision.document_id),
-                )}
-              </strong>
+              <strong>{requestDocumentName(decision)}</strong>
+            </div>
+            <div>
+              <span>DOCUMENT OWNER</span>
+              <strong>{companyName(decision.owner_company_id)}</strong>
             </div>
             <div>
               <span>REQUESTING COMPANY</span>
@@ -2448,7 +2523,7 @@ export default function Home() {
               </strong>
             </div>
             <div>
-              <span>REASON FOR REVIEW</span>
+              <span>REQUEST CONTEXT</span>
               <strong>
                 {decision.escalation_reason ||
                   decision.reason ||
@@ -2456,11 +2531,7 @@ export default function Home() {
               </strong>
             </div>
           </div>
-          {["pending", "escalated", "pending_approval", "manual"].includes(
-            decision.status,
-          ) &&
-          (!decision.owner_company_id ||
-            decision.owner_company_id === data.company.id) ? (
+          {canReviewRequest(decision) ? (
             <>
               <label className="checkbox-label">
                 <input
@@ -2766,9 +2837,9 @@ function AgentPlayground({
       <div className="playground-intro">
         <Terminal size={23} />
         <p>
-          This console acts as your partner&apos;s agent. You will connect with
-          a bridge code, select an approved purpose, and request original
-          documents. Each document is evaluated separately.
+          Your bridge code will identify the requesting company. You will select
+          a purpose and request original documents from the other company. Each
+          document owner&apos;s sharing rules will apply.
         </p>
         <Badge tone="glass">LIVE API</Badge>
       </div>

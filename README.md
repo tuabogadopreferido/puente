@@ -18,6 +18,17 @@ The former Acme and Globex demo accounts, their documents and the Storage bucket
 
 To serve files, the owner will either keep selected PDFs connected in a browser tab or run the [local source connector](docs/source-agent.md). Registering a file sends only its title, type, expiry, sensitivity, size, SHA-256 and opaque source identifiers. Local paths, PDF bytes and extracted text are not sent to Puente. The agent will classify files locally; the owner can correct the metadata in the interface.
 
+Both companies can serve and request documents through the same bridge. Serving and requesting are roles of each operation. Each company and its agent retain these separate capabilities:
+
+| Operation                             | Authority                                                                                                                               |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Serve its own documents               | Register sources, classify files, configure batches and sharing, and decide incoming requests with its owner credential.                |
+| Request the other company's documents | Use a bridge credential identifying its own company as requester; access depends on the document owner's purposes, rules and decisions. |
+
+For example, company A can request B's incorporation document while B requests A's tax certificate through the same bridge. Neither request grants authority to administer the other company's workspace. Returning documents remains optional, and an offer requires its own authorization before transfer.
+
+The same agent can perform both roles. It will retain its permanent owner credential separately from each temporary bridge token. In **Bridges**, **Code for my agent** identifies the current company as requester; **Code for partner** identifies the other company. When MCP is configured with an owner Authorization header, the agent will pass the bridge token explicitly in the `token` argument for counterpart calls. That argument takes precedence over the header.
+
 An approved request returns a direct-transfer descriptor and an Ed25519 authorization receipt. The source and recipient then establish their WebRTC connection. The receiver verifies the expected byte length and SHA-256 before saving. A receipt alone does not prove receipt of the original; successful reception is recorded separately as a receiver-reported event.
 
 ## Document batches and exceptions
