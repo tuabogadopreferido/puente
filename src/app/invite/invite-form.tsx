@@ -1,8 +1,13 @@
 "use client";
 import Link from "next/link";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
+import { EmailAccessForm } from "@/components/email-access-form";
+import {
+  validateHumanSession,
+  endHumanSession,
+} from "@/lib/human-session-browser";
 export default function InviteForm({
   token,
   companyName,
@@ -11,57 +16,28 @@ export default function InviteForm({
   companyName: string;
 }) {
   const [session, setSession] = useState<Session | null>(null);
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [accepted, setAccepted] = useState(false);
   useEffect(() => {
     const client = getSupabaseBrowser();
     if (!client) return;
-    client.auth.getSession().then(({ data }) => setSession(data.session));
+    client.auth
+      .getSession()
+      .then(({ data }) => validateHumanSession(data.session))
+      .then(setSession)
+      .catch((reason) =>
+        setMessage(
+          reason instanceof Error
+            ? reason.message
+            : "Session verification failed.",
+        ),
+      );
     const { data } = client.auth.onAuthStateChange((_event, value) =>
       setSession(value),
     );
     return () => data.subscription.unsubscribe();
   }, []);
-  async function authenticate(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setMessage("");
-    try {
-      const client = getSupabaseBrowser();
-      if (!client) throw new Error("Authentication is not configured.");
-      if (mode === "signup") {
-        const { data, error } = await client.auth.signUp({
-          email,
-          password,
-          options: {
-            emailRedirectTo: `${window.location.origin}/invite?token=${encodeURIComponent(token)}`,
-          },
-        });
-        if (error) throw error;
-        setSession(data.session);
-        setMessage(
-          "You will receive an email confirmation link. After confirming your mailbox, you will return to this invitation and sign in to accept. Keep this invitation link available.",
-        );
-      } else {
-        const { data, error } = await client.auth.signInWithPassword({
-          email,
-          password,
-        });
-        if (error) throw error;
-        setSession(data.session);
-      }
-    } catch (error) {
-      setMessage(
-        error instanceof Error ? error.message : "Authentication failed.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
   async function accept() {
     if (!session) return;
     setBusy(true);
@@ -82,7 +58,7 @@ export default function InviteForm({
         );
       setAccepted(true);
       setMessage(
-        "Your bridge is ready. You can open the workspace and upload your company's documents. Each document request will follow the owner's permissions.",
+        "Your bridge is ready. You can open the workspace and register your company's files at their source. Each document request will follow the owner's permissions.",
       );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Acceptance failed.");
@@ -127,12 +103,18 @@ export default function InviteForm({
             className="button button-outline button-full"
             disabled={busy}
             onClick={() =>
-              void getSupabaseBrowser()
-                ?.auth.signOut()
+              void endHumanSession(session)
                 .then(() => {
                   setSession(null);
                   setMessage("");
                 })
+                .catch((reason) =>
+                  setMessage(
+                    reason instanceof Error
+                      ? reason.message
+                      : "Sign-out could not be confirmed.",
+                  ),
+                )
             }
           >
             Use a different email
@@ -140,54 +122,7 @@ export default function InviteForm({
         </>
       ) : (
         <>
-          <div style={{ display: "flex", gap: 10 }}>
-            <button
-              type="button"
-              className={`button ${mode === "signin" ? "button-dark" : "button-outline"}`}
-              onClick={() => setMode("signin")}
-            >
-              Sign in
-            </button>
-            <button
-              type="button"
-              className={`button ${mode === "signup" ? "button-dark" : "button-outline"}`}
-              onClick={() => setMode("signup")}
-            >
-              Create account
-            </button>
-          </div>
-          <form onSubmit={authenticate} style={{ display: "grid", gap: 16 }}>
-            <label>
-              Invited email address
-              <input
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                autoComplete="email"
-                required
-              />
-            </label>
-            <label>
-              Password
-              <input
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                autoComplete={
-                  mode === "signup" ? "new-password" : "current-password"
-                }
-                required
-                minLength={8}
-              />
-            </label>
-            <button className="button button-dark button-full" disabled={busy}>
-              {busy
-                ? "Please wait…"
-                : mode === "signup"
-                  ? "Create account and confirm email"
-                  : "Sign in to review invitation"}
-            </button>
-          </form>
+          <EmailAccessForm onSession={setSession} />
         </>
       )}
       {!accepted && message && (

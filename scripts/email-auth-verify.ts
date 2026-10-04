@@ -2,7 +2,11 @@
 import { loadEnvConfig } from "@next/env";
 import { createHmac, randomUUID } from "node:crypto";
 import { createClient, type Session } from "@supabase/supabase-js";
-import { verifyEmailCode, verifiedSessionId } from "../src/lib/email-otp";
+import {
+  requestEmailCode,
+  verifyEmailCode,
+  verifiedSessionId,
+} from "../src/lib/email-otp";
 import {
   requireHumanSession,
   requireOwner,
@@ -239,6 +243,77 @@ async function main() {
     );
     pass(
       "Codes are single use, resend is throttled, and six wrong attempts lock the challenge",
+    );
+
+    // Exercise the real request-code backend with only the outbound email
+    // transport replaced. No sign-in email may leave this regression script.
+    const profile = await db.auth.admin.updateUserById(a.userId, {
+      user_metadata: { full_name: "Existing fixture name" },
+    });
+    must(!profile.error, "Could not prepare existing profile");
+    const ageChallenge = await db
+      .from("email_login_challenges")
+      .update({ created_at: new Date(Date.now() - 61_000).toISOString() })
+      .eq("id", a.challenge_id);
+    must(!ageChallenge.error, "Could not advance resend interval");
+    const originalFetch = globalThis.fetch;
+    let emailCode = "";
+    let requested: { challenge_id: string };
+    try {
+      globalThis.fetch = async (resource, init) => {
+        const destination =
+          typeof resource === "string"
+            ? resource
+            : resource instanceof URL
+              ? resource.href
+              : resource.url;
+        if (new URL(destination).hostname === "api.agentmail.to") {
+          const payload = JSON.parse(String(init?.body));
+          must(
+            payload.to.length === 1 && payload.to[0] === a.email,
+            "Email transport recipient mismatch",
+          );
+          emailCode =
+            payload.text.match(/sign-in code is (\d{6,10})\./)?.[1] || "";
+          return Response.json({
+            message_id: "fixture-message",
+            thread_id: "fixture-thread",
+          });
+        }
+        return originalFetch(resource, init);
+      };
+      requested = await requestEmailCode(request(), { email: a.email });
+      challenges.add(requested.challenge_id);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    must(emailCode, "Email-only sign-in did not prepare an OTP");
+    const signedInAgain = await verifyEmailCode(request(), {
+      challenge_id: requested.challenge_id,
+      email: a.email,
+      code: emailCode,
+    });
+    const preservedCompany = await db
+      .from("companies")
+      .select("name")
+      .eq("id", a.company_id)
+      .single();
+    const preservedUser = await db.auth.admin.getUserById(a.userId);
+    const memberships = await db
+      .from("company_members")
+      .select("company_id")
+      .eq("user_id", a.userId);
+    must(
+      signedInAgain.company_id === a.company_id &&
+        signedInAgain.session.user.id === a.userId &&
+        preservedCompany.data?.name === "Auth fixture a" &&
+        preservedUser.data.user?.user_metadata.full_name ===
+          "Existing fixture name" &&
+        memberships.data?.length === 1,
+      "Email-only sign-in replaced an existing profile or workspace",
+    );
+    pass(
+      "Email-only sign-in preserves the existing name and private workspace without duplicate accounts",
     );
 
     const direct = await fixture("bypass");

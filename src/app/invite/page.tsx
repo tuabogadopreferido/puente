@@ -101,10 +101,10 @@ export default async function InvitePage({
               </dl>
               <p style={{ fontSize: 14, lineHeight: 1.7 }}>
                 You will sign in with the email address that received this
-                invitation. If you create a new account, you will confirm that
-                mailbox before accepting. Acceptance will create a bilateral
-                bridge valid for 24 hours; document requests will still require
-                their own permissions.
+                invitation. You will enter an email code to confirm that mailbox
+                before accepting. Acceptance will create a bilateral bridge
+                valid for 24 hours; document requests will still require their
+                own permissions.
               </p>
               <InviteForm token={token} companyName={preview.company_name} />
             </>

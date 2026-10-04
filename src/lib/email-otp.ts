@@ -10,7 +10,7 @@ const emailInput = z
   .transform((value) => value.toLowerCase());
 export const requestCodeInput = z
   .object({
-    name: z.string().trim().min(1).max(200),
+    name: z.string().trim().min(1).max(200).optional(),
     email: z.string().trim().pipe(emailInput),
   })
   .strict();
@@ -71,7 +71,7 @@ export async function requestEmailCode(request: Request, value: unknown) {
     .trim();
   const { data: reserved, error } = await admin().rpc("reserve_email_login", {
     p_email: input.email,
-    p_name: input.name,
+    p_name: input.name ?? "My workspace",
     p_ip_hash: fingerprint(`ip:${ip}`),
   });
   assertDb(error);
@@ -87,7 +87,7 @@ export async function requestEmailCode(request: Request, value: unknown) {
       await admin().auth.admin.generateLink({
         type: "magiclink",
         email: input.email,
-        options: { data: { full_name: input.name } },
+        ...(input.name ? { options: { data: { full_name: input.name } } } : {}),
       });
     if (generateError || !data.properties?.email_otp || !data.user)
       throw new ApiError(

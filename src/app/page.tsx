@@ -44,13 +44,22 @@ import {
   ShieldEllipsis,
   Sparkles,
   Terminal,
-  Upload,
   X,
   XCircle,
 } from "lucide-react";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 import { normalizeSensitivity } from "@/lib/document-policy";
 import { OwnerAgentConnection } from "@/components/owner-agent-connection";
+import { EmailAccessForm } from "@/components/email-access-form";
+import {
+  DocumentBatchManager,
+  DocumentSharingEditor,
+} from "@/components/document-sharing";
+import { registerLocalFiles } from "@/lib/p2p-client";
+import {
+  validateHumanSession,
+  endHumanSession,
+} from "@/lib/human-session-browser";
 
 type Company = {
   id: string;
@@ -152,7 +161,6 @@ type View =
   "vault" | "bridges" | "policies" | "requests" | "activity" | "playground";
 type Delivery = {
   download_url?: string;
-  extracted_text?: string;
   receipt?: Record<string, unknown>;
   status?: string;
   request?: RequestItem;
@@ -180,7 +188,7 @@ const empty: Dashboard = {
   events: [],
 };
 const navigation = [
-  { id: "vault", label: "Document vault", icon: FolderClosed },
+  { id: "vault", label: "Documents", icon: FolderClosed },
   { id: "bridges", label: "Bridges", icon: GitBranch },
   { id: "policies", label: "Policies", icon: ShieldEllipsis },
   { id: "requests", label: "Requests", icon: Bell },
@@ -423,31 +431,6 @@ function BridgeArt() {
 }
 
 function Login({ onSession }: { onSession: (session: Session) => void }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  async function signIn(demo = false) {
-    setBusy(true);
-    setError("");
-    try {
-      const client = getSupabaseBrowser();
-      if (!client)
-        throw new Error(
-          "The workspace is being configured. Please try again shortly.",
-        );
-      const result = await client.auth.signInWithPassword({
-        email: demo ? "acme@puente.demo" : email,
-        password: demo ? "PuenteDemo2026!" : password,
-      });
-      if (result.error) throw result.error;
-      if (result.data.session) onSession(result.data.session);
-    } catch (err) {
-      setError(errorText(err));
-    } finally {
-      setBusy(false);
-    }
-  }
   return (
     <main className="login-page">
       <section className="login-story">
@@ -505,76 +488,16 @@ function Login({ onSession }: { onSession: (session: Session) => void }) {
             to do business.
           </h2>
           <p>
-            Sign in to manage your company&apos;s documents and permissions.
+            Your files will stay on your device. Puente will manage who can
+            request them.
           </p>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void signIn();
-            }}
-          >
-            <label>
-              Work email
-              <input
-                type="email"
-                required
-                autoComplete="email"
-                placeholder="you@company.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </label>
-            <label>
-              Password
-              <input
-                type="password"
-                required
-                autoComplete="current-password"
-                placeholder="Your password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </label>
-            {error && (
-              <div className="inline-error" role="alert">
-                {error}
-              </div>
-            )}
-            <button className="button button-dark button-full" disabled={busy}>
-              {busy ? (
-                <LoaderCircle size={17} className="spin" />
-              ) : (
-                <>
-                  Enter workspace
-                  <ArrowRight size={17} />
-                </>
-              )}
-            </button>
-          </form>
-          <div className="form-divider">
-            <span />
-            EXPLORING PUENTE?
-            <span />
-          </div>
-          <button
-            className="button button-outline button-full"
-            disabled={busy}
-            onClick={() => void signIn(true)}
-          >
-            <Sparkles size={16} /> Try the live demo
-            <ArrowUpRight size={15} />
-          </button>
-          <p className="demo-note">
-            A real workspace with fictional Mexican companies.
-            <br />
-            No personal or client documents.
-          </p>
+          <EmailAccessForm onSession={onSession} />
         </div>
         <div className="login-stack">
           Made with <span className="supabase-mark">ϟ</span>
           <strong>Supabase</strong>
           <span className="stack-divider" />
-          Built for Supabase Select 2026
+          Files stay with you
         </div>
       </section>
     </main>
@@ -594,6 +517,7 @@ export default function Home() {
   const [filter, setFilter] = useState("all");
   const [realtime, setRealtime] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [ownerAgentOpen, setOwnerAgentOpen] = useState(false);
   const [bridgeOpen, setBridgeOpen] = useState(false);
@@ -603,21 +527,19 @@ export default function Home() {
     expires_at: string;
   } | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<Document | null>(null);
+  const [ownerDownloadUrl, setOwnerDownloadUrl] = useState("");
   const [decision, setDecision] = useState<RequestItem | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<Bridge | null>(null);
   const [manualResponse, setManualResponse] = useState("");
   const [createRule, setCreateRule] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploadError, setUploadError] = useState("");
-  const [uploadPhase, setUploadPhase] = useState("");
-  const [pendingUploadSession, setPendingUploadSession] = useState<{
-    uploadId: string;
-    token: string;
-    path: string;
-    uploaded: boolean;
-  } | null>(null);
-  const uploadInFlight = useRef(false);
-  const uploadSelection = useRef(0);
+  const [sourceStatus, setSourceStatus] = useState("");
+  const sourceHandles = useRef<
+    Array<Awaited<ReturnType<typeof registerLocalFiles>>>
+  >([]);
+  const [localSourceCount, setLocalSourceCount] = useState(0);
+  const [shareOpen, setShareOpen] = useState(false);
   const [correctionType, setCorrectionType] = useState("");
   const [correctionSensitive, setCorrectionSensitive] = useState(false);
   const [correctionExpiry, setCorrectionExpiry] = useState("");
@@ -632,6 +554,11 @@ export default function Home() {
     expires_at: string;
     email?: { status: string; message?: string };
   } | null>(null);
+  const closeLocalSources = useCallback(() => {
+    sourceHandles.current.forEach((source) => source.close());
+    sourceHandles.current = [];
+    setLocalSourceCount(0);
+  }, []);
   const api = useCallback(
     async <T,>(
       path: string,
@@ -648,6 +575,12 @@ export default function Home() {
         );
       const response = await fetch(path, { ...init, headers });
       const payload = await response.json().catch(() => ({}));
+      if (response.status === 401 && !token) {
+        closeLocalSources();
+        await getSupabaseBrowser()?.auth.signOut({ scope: "local" });
+        setSession(null);
+        setData(empty);
+      }
       if (!response.ok)
         throw new Error(
           typeof payload.error === "string"
@@ -658,7 +591,7 @@ export default function Home() {
         );
       return payload as T;
     },
-    [session?.access_token],
+    [session?.access_token, closeLocalSources],
   );
   const refresh = useCallback(
     async (quiet = false) => {
@@ -682,15 +615,20 @@ export default function Home() {
       const timeout = window.setTimeout(() => setInitializing(false), 0);
       return () => window.clearTimeout(timeout);
     }
-    client.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setInitializing(false);
-    });
+    client.auth
+      .getSession()
+      .then(({ data }) => validateHumanSession(data.session))
+      .then(setSession)
+      .catch((cause) => setError(errorText(cause)))
+      .finally(() => setInitializing(false));
     const { data: subscription } = client.auth.onAuthStateChange(
-      (_event, next) => setSession(next),
+      (_event, next) => {
+        if (!next) closeLocalSources();
+        setSession(next);
+      },
     );
     return () => subscription.subscription.unsubscribe();
-  }, []);
+  }, [closeLocalSources]);
   useEffect(() => {
     if (!session) return;
     const task = window.setTimeout(() => void refresh(), 0);
@@ -720,6 +658,10 @@ export default function Home() {
       setRealtime(false);
     };
   }, [session, refresh]);
+  useEffect(() => {
+    const handles = sourceHandles;
+    return () => handles.current.forEach((source) => source.close());
+  }, []);
   useEffect(() => {
     if (!toast) return;
     const timeout = window.setTimeout(() => setToast(""), 4200);
@@ -779,130 +721,36 @@ export default function Home() {
       setBusy("");
     }
   }
-  async function selectUploadFile(file: File | null) {
-    const selection = ++uploadSelection.current;
-    setSelectedFile(null);
-    setPendingUploadSession(null);
-    setUploadError("");
-    setUploadPhase("");
-    if (!file) return;
-    if (
-      !/\.pdf$/i.test(file.name) ||
-      (file.type &&
-        !["application/pdf", "application/octet-stream"].includes(file.type))
-    ) {
-      setUploadError("Choose a PDF file.");
-      return;
-    }
-    if (!file.size || file.size > 20 * 1024 * 1024) {
-      setUploadError(
-        file.size
-          ? "This PDF exceeds the 20 MB limit. Choose a smaller PDF."
-          : "This file is empty. Choose a PDF with content.",
-      );
-      return;
-    }
-    setUploadPhase("Checking PDF…");
-    try {
-      const header = await file.slice(0, 5).text();
-      if (selection !== uploadSelection.current) return;
-      if (header !== "%PDF-")
-        throw new Error(
-          "This file is not a valid PDF. Choose the original PDF file.",
-        );
-      setSelectedFile(file);
-    } catch (err) {
-      if (selection === uploadSelection.current) setUploadError(errorText(err));
-    } finally {
-      if (selection === uploadSelection.current) setUploadPhase("");
-    }
-  }
-  async function upload(e: FormEvent) {
+  async function registerFiles(e: FormEvent) {
     e.preventDefault();
-    if (!selectedFile || uploadInFlight.current) return;
-    uploadInFlight.current = true;
-    setBusy("upload");
+    if (!selectedFiles.length || !session || busy === "register") return;
+    setBusy("register");
     setUploadError("");
-    let current = pendingUploadSession;
-    let completed = false;
+    setSourceStatus("Registering document details…");
     try {
-      const client = getSupabaseBrowser();
-      if (!client)
-        throw new Error(
-          "The workspace is being configured. Please try again shortly.",
-        );
-      if (!current) {
-        setUploadPhase("Preparing upload…");
-        const result = await api<{
-          uploadId: string;
-          token: string;
-          path: string;
-        }>("/api/documents/upload/init", {
-          method: "POST",
-          body: JSON.stringify({
-            filename: selectedFile.name,
-            size: selectedFile.size,
-          }),
-        });
-        current = { ...result, uploaded: false };
-        setPendingUploadSession(current);
-      }
-      if (!current.uploaded) {
-        setUploadPhase("Uploading original…");
-        const { error: storageError } = await client.storage
-          .from("documents")
-          .uploadToSignedUrl(current.path, current.token, selectedFile, {
-            contentType: "application/pdf",
-            upsert: false,
-          });
-        if (storageError) {
-          // The PUT may have reached Storage despite a lost response. Complete
-          // checks this same session's object; never allocate another path here.
-          setUploadPhase("Checking uploaded original…");
-        } else {
-          current = { ...current, uploaded: true };
-          setPendingUploadSession(current);
-          setUploadPhase("Classifying document…");
-        }
-      } else {
-        setUploadPhase("Classifying document…");
-      }
-      const result = await api<{ document: Document; notice?: string }>(
-        "/api/documents/upload/complete",
-        {
-          method: "POST",
-          body: JSON.stringify({ uploadId: current.uploadId }),
+      const source = await registerLocalFiles(
+        async () => {
+          const client = getSupabaseBrowser();
+          const { data: current } = await client!.auth.getSession();
+          if (!current.session)
+            throw new Error("Sign in again to connect this source.");
+          return current.session.access_token;
         },
+        selectedFiles,
+        setSourceStatus,
       );
-      completed = true;
-      // Clear the completed operation before refreshing so a failed dashboard
-      // refresh cannot present it as a failed upload and create a duplicate.
-      setPendingUploadSession(null);
-      setSelectedFile(null);
+      sourceHandles.current.push(source);
+      setLocalSourceCount((count) => count + source.documents.length);
+      setSelectedFiles([]);
       setUploadOpen(false);
-      setData((previous) => ({
-        ...previous,
-        documents: [
-          result.document,
-          ...previous.documents.filter((doc) => doc.id !== result.document.id),
-        ],
-      }));
       setToast(
-        result.notice ||
-          "Document uploaded. Review its classification in the vault.",
+        "Documents registered. Keep this tab open to serve the original files.",
       );
-      setUploadPhase("Refreshing vault…");
       await refresh(true);
     } catch (err) {
-      if (completed)
-        setError(
-          "The document was saved, but the vault could not refresh. Refresh the workspace to see it.",
-        );
-      else setUploadError(errorText(err));
+      setUploadError(errorText(err));
     } finally {
       setBusy("");
-      setUploadPhase("");
-      uploadInFlight.current = false;
     }
   }
   async function sendInvitation(e: FormEvent) {
@@ -1005,6 +853,7 @@ export default function Home() {
       setSelectedDoc(null);
   }
   function openDocument(doc: Document) {
+    setOwnerDownloadUrl("");
     setSelectedDoc(doc);
     setCorrectionType(doc.document_type);
     setCorrectionSensitive(
@@ -1118,9 +967,12 @@ export default function Home() {
           <div className="privacy-card">
             <ShieldCheck size={22} />
             <strong>Private by default.</strong>
-            <p>Your files are shared only through an authorized bridge.</p>
+            <p>
+              Originals stay with you. Your source must be online for a
+              download.
+            </p>
             <span>
-              <i /> ORIGINALS PRESERVED
+              <i /> ORIGINALS AT SOURCE
             </span>
           </div>
           <div className="profile">
@@ -1135,12 +987,13 @@ export default function Home() {
               className="icon-button"
               aria-label="Sign out"
               onClick={() =>
-                void getSupabaseBrowser()
-                  ?.auth.signOut()
+                void endHumanSession(session)
                   .then(() => {
+                    closeLocalSources();
                     setSession(null);
                     setData(empty);
                   })
+                  .catch((cause) => setError(errorText(cause)))
               }
             >
               <LogOut size={16} />
@@ -1176,8 +1029,8 @@ export default function Home() {
             </button>
             <button
               className="notification-button"
-              aria-label={`${pending.length} pending requests`}
-              onClick={() => navigate("requests")}
+              aria-label={`Notifications: ${pending.length} pending requests`}
+              onClick={() => setNotificationsOpen(true)}
             >
               <Bell size={18} />
               {pending.length > 0 && <i />}
@@ -1207,76 +1060,61 @@ export default function Home() {
                 <div>
                   <div className="eyebrow">YOUR COMPANY, CONNECTED</div>
                   <h1>
-                    Document vault<span className="title-dot">.</span>
+                    Your documents<span className="title-dot">.</span>
                   </h1>
                   <p>
-                    Your originals stay private. You decide how they are shared.
+                    Originals stay on your device or connected drive. You
+                    control each exchange.
                   </p>
                 </div>
                 <div className="heading-actions">
                   <button
                     className="button button-outline"
                     disabled={!data.company.id}
-                    onClick={() => setOwnerAgentOpen(true)}
-                  >
-                    <KeyRound size={17} />
-                    Connect my agent
-                  </button>
-                  <button
-                    className="button button-dark"
                     onClick={() => setUploadOpen(true)}
                   >
-                    <Plus size={17} />
-                    Upload document
+                    <Plus size={17} /> Register documents
                   </button>
                 </div>
               </div>
               <div className="overview-row">
-                <section className="welcome-card">
-                  <div>
-                    <Badge tone="glass">
-                      <LockKeyhole size={12} /> BUILT ON TRUST
-                    </Badge>
-                    <h2>
-                      Business moves faster
-                      <br />
-                      when permissions are clear.
-                    </h2>
-                    <p>
-                      Connect a partner with a defined purpose,
-                      <br />
-                      so their agent can handle the paperwork.
-                    </p>
-                    <button
-                      onClick={() => {
-                        setCounterparty(
-                          data.companies.find((c) => c.id !== data.company.id)
-                            ?.id || "",
-                        );
-                        setBridgeOpen(true);
-                      }}
-                    >
-                      Create a bridge <ArrowRight size={16} />
-                    </button>
-                  </div>
-                  <div className="mini-bridge">
-                    <div className="mini-node">
-                      <Building2 size={27} />
-                      <span>You</span>
-                    </div>
-                    <div className="mini-link">
-                      <span />
-                      <div>
-                        <Check size={17} />
-                      </div>
-                      <span />
-                    </div>
-                    <div className="mini-node partner">
-                      <Sparkles size={27} />
-                      <span>Your partner</span>
-                    </div>
-                    <div className="mini-label">PERMISSION TO CONNECT</div>
-                  </div>
+                <section
+                  className="workspace-actions"
+                  aria-label="Document actions"
+                >
+                  <button
+                    className="workspace-action"
+                    disabled={!data.company.id}
+                    onClick={() => setOwnerAgentOpen(true)}
+                  >
+                    <span className="workspace-action-icon">
+                      <KeyRound size={25} />
+                    </span>
+                    <strong>Connect my agent</strong>
+                    <span>
+                      Your agent will register files and manage requests for
+                      your company.
+                    </span>
+                    <ArrowUpRight
+                      size={19}
+                      className="workspace-action-arrow"
+                    />
+                  </button>
+                  <button
+                    className="workspace-action workspace-action-primary"
+                    disabled={!data.company.id}
+                    onClick={() => setShareOpen(true)}
+                  >
+                    <span className="workspace-action-icon">
+                      <GitBranch size={25} />
+                    </span>
+                    <strong>Share docs</strong>
+                    <span>
+                      You will choose a partner and grant access for up to 24
+                      hours.
+                    </span>
+                    <ArrowRight size={19} className="workspace-action-arrow" />
+                  </button>
                 </section>
                 <section className="stat-stack">
                   <div className="stat-card">
@@ -1284,12 +1122,12 @@ export default function Home() {
                       <FolderClosed size={20} />
                     </div>
                     <div>
-                      <span>Documents secured</span>
+                      <span>Documents registered</span>
                       <strong>
                         {data.documents.length.toString().padStart(2, "0")}
                       </strong>
                     </div>
-                    <span className="stat-foot">Private vault</span>
+                    <span className="stat-foot">Stored at source</span>
                   </div>
                   <div className="stat-card">
                     <div className="stat-icon teal">
@@ -1311,7 +1149,13 @@ export default function Home() {
                   </div>
                 </section>
               </div>
-              <div className="content-columns">
+              <DocumentBatchManager
+                api={api}
+                documents={data.documents}
+                purposes={data.purposes}
+                onSaved={() => void refresh(true)}
+              />
+              <div className="content-columns documents-layout">
                 <section className="panel documents-panel">
                   <div className="panel-heading">
                     <div>
@@ -1322,13 +1166,13 @@ export default function Home() {
                         </span>
                       </h2>
                       <p>
-                        Original files. Organized and ready for authorized
-                        agents.
+                        File details and permissions. Originals stay with their
+                        owner.
                       </p>
                     </div>
                     <button
                       className="icon-button"
-                      aria-label="Upload a document"
+                      aria-label="Register documents"
                       onClick={() => setUploadOpen(true)}
                     >
                       <Plus size={20} />
@@ -1434,15 +1278,15 @@ export default function Home() {
                       <EmptyState
                         title={
                           loading
-                            ? "Loading your vault"
+                            ? "Loading your documents"
                             : search
                               ? "No matching documents"
-                              : "Your vault is ready"
+                              : "Your document list is empty"
                         }
                         text={
                           search
                             ? "Try another name or document type."
-                            : "Upload a PDF to classify and securely share it with a business partner."
+                            : "You will register files from your device or connect your agent to make documents available."
                         }
                       />
                     )}
@@ -1450,92 +1294,11 @@ export default function Home() {
                   <div className="table-footer">
                     <ShieldCheck size={14} />
                     <span>
-                      Your original PDFs remain intact. Every delivery includes
-                      a SHA-256 receipt.
+                      Puente keeps document details and permissions. File
+                      transfers require the source to be online.
                     </span>
                   </div>
                 </section>
-                <aside className="right-column">
-                  <section className="panel activity-preview">
-                    <div className="panel-heading">
-                      <h2>Recent activity</h2>
-                      <span
-                        className={`live-dot ${realtime ? "is-live" : ""}`}
-                      />
-                    </div>
-                    {data.events.length ? (
-                      <div className="timeline">
-                        {data.events.slice(0, 4).map((event) => (
-                          <button
-                            key={event.id}
-                            className="timeline-event"
-                            onClick={() => setSelectedEvent(event)}
-                          >
-                            <div className="timeline-icon">
-                              <Activity size={14} />
-                            </div>
-                            <div>
-                              <strong>
-                                {nice(
-                                  event.event_type ||
-                                    event.action ||
-                                    event.type,
-                                )}
-                              </strong>
-                              <p>
-                                {event.document_id
-                                  ? docName(
-                                      data.documents.find(
-                                        (d) => d.id === event.document_id,
-                                      ),
-                                    )
-                                  : event.actor_company_id
-                                    ? companyName(event.actor_company_id)
-                                    : "Workspace update"}
-                              </p>
-                              <time>{time(event.created_at)}</time>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="quiet-activity">
-                        <Activity size={25} />
-                        <h3>A clear record, from day one.</h3>
-                        <p>
-                          Document requests, decisions and deliveries will
-                          appear here.
-                        </p>
-                      </div>
-                    )}
-                    <button
-                      className="panel-link"
-                      onClick={() => navigate("activity")}
-                    >
-                      View all activity
-                      <ArrowRight size={15} />
-                    </button>
-                  </section>
-                  <section className="exception-card">
-                    <div className="exception-icon">
-                      <ShieldEllipsis size={20} />
-                    </div>
-                    <h3>
-                      {pending.length
-                        ? `${pending.length} request${pending.length === 1 ? "" : "s"} need${pending.length === 1 ? "s" : ""} your review`
-                        : "You handle the exceptions."}
-                    </h3>
-                    <p>
-                      {pending.length
-                        ? "A partner needs your permission. Review the document and declared purpose."
-                        : "Policies handle routine requests. Sensitive documents always come to you."}
-                    </p>
-                    <button onClick={() => navigate("requests")}>
-                      {pending.length ? "Review requests" : "Explore requests"}
-                      <ArrowRight size={15} />
-                    </button>
-                  </section>
-                </aside>
               </div>
               <div className="agent-strip">
                 <div className="agent-strip-icon">
@@ -2050,16 +1813,119 @@ export default function Home() {
               Purpose-bound document exchange.
             </span>
             <span>
-              Built with Supabase<span className="mid-dot">·</span>Select 2026
+              Built with Supabase<span className="mid-dot">·</span>Direct file
+              exchange
             </span>
           </footer>
         </main>
       </div>
+      {localSourceCount > 0 && (
+        <div className="source-online-note" role="status">
+          <Radio size={16} />
+          <span>
+            {sourceStatus ||
+              `${localSourceCount} local documents connected. Keep this tab open for downloads.`}
+          </span>
+        </div>
+      )}
       {toast && (
         <div className="toast" role="status">
           <CheckCircle2 size={18} />
           {toast}
         </div>
+      )}
+      {notificationsOpen && (
+        <Modal
+          title="Notifications"
+          subtitle="Requests awaiting your decision and recent workspace activity."
+          onClose={() => setNotificationsOpen(false)}
+        >
+          {pending.length > 0 && (
+            <section className="notification-section">
+              <h3>
+                Awaiting your decision{" "}
+                <span className="count-pill">{pending.length}</span>
+              </h3>
+              {pending.slice(0, 6).map((request) => (
+                <button
+                  key={request.id}
+                  className="notification-item"
+                  onClick={() => {
+                    setNotificationsOpen(false);
+                    setManualResponse("");
+                    setCreateRule(false);
+                    setDecision(request);
+                  }}
+                >
+                  <span className="notification-item-icon">
+                    <Bell size={18} />
+                  </span>
+                  <span>
+                    <strong>
+                      {docName(
+                        data.documents.find(
+                          (doc) => doc.id === request.document_id,
+                        ),
+                      )}
+                    </strong>
+                    <small>
+                      {request.purpose_text || purposeName(request.purpose_id)}
+                    </small>
+                  </span>
+                  <ChevronRight size={16} />
+                </button>
+              ))}
+            </section>
+          )}
+          <section className="notification-section">
+            <h3>Recent activity</h3>
+            {data.events.length ? (
+              data.events.slice(0, 8).map((event) => (
+                <button
+                  key={event.id}
+                  className="notification-item"
+                  onClick={() => {
+                    setNotificationsOpen(false);
+                    setSelectedEvent(event);
+                  }}
+                >
+                  <span className="notification-item-icon">
+                    <Activity size={18} />
+                  </span>
+                  <span>
+                    <strong>
+                      {nice(event.event_type || event.action || event.type)}
+                    </strong>
+                    <small>
+                      {event.document_id
+                        ? docName(
+                            data.documents.find(
+                              (doc) => doc.id === event.document_id,
+                            ),
+                          )
+                        : "Workspace update"}{" "}
+                      · {time(event.created_at)}
+                    </small>
+                  </span>
+                  <ChevronRight size={16} />
+                </button>
+              ))
+            ) : (
+              <p className="form-note">
+                Requests, decisions and completed transfers will appear here.
+              </p>
+            )}
+          </section>
+          <button
+            className="button button-outline button-full"
+            onClick={() => {
+              setNotificationsOpen(false);
+              navigate("activity");
+            }}
+          >
+            View all activity <ArrowRight size={16} />
+          </button>
+        </Modal>
       )}
       {ownerAgentOpen && (
         <Modal
@@ -2071,7 +1937,7 @@ export default function Home() {
           <OwnerAgentConnection
             companyName={data.company.name}
             api={api}
-            onUpload={() => {
+            onRegister={() => {
               setOwnerAgentOpen(false);
               setUploadOpen(true);
             }}
@@ -2080,75 +1946,117 @@ export default function Home() {
       )}
       {uploadOpen && (
         <Modal
-          title="Add to your document vault"
-          subtitle="The original PDF will be preserved. Classification is based on its content."
+          title="Register documents from this device"
+          subtitle="Only file details will be saved in Puente. The original files will stay on your device."
           onClose={() => {
-            if (!uploadInFlight.current) setUploadOpen(false);
+            if (busy !== "register") setUploadOpen(false);
           }}
         >
-          <form onSubmit={upload}>
-            <label className={`upload-zone ${selectedFile ? "has-file" : ""}`}>
+          <form onSubmit={registerFiles}>
+            <label
+              className={`upload-zone ${selectedFiles.length ? "has-file" : ""}`}
+            >
               <input
                 type="file"
                 accept="application/pdf,.pdf"
-                disabled={busy === "upload"}
-                aria-describedby="upload-status upload-error"
-                onChange={(e) => {
-                  const file = e.target.files?.[0] || null;
-                  e.target.value = "";
-                  void selectUploadFile(file);
+                multiple
+                disabled={busy === "register"}
+                onChange={(event) => {
+                  setSelectedFiles(Array.from(event.target.files || []));
+                  setUploadError("");
                 }}
               />
               <div>
-                <Upload size={28} />
+                <FolderClosed size={28} />
               </div>
               <strong>
-                {selectedFile ? selectedFile.name : "Choose a PDF to upload"}
+                {selectedFiles.length
+                  ? `${selectedFiles.length} document${selectedFiles.length === 1 ? "" : "s"} selected`
+                  : "Choose your PDF files"}
               </strong>
-              <span id="upload-status" role="status" aria-live="polite">
-                {uploadPhase ||
-                  (selectedFile
-                    ? `${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB · ${pendingUploadSession?.uploaded ? "Original uploaded; ready to finish" : "Ready to upload"}`
-                    : "PDF files up to 20 MB · Original content stays intact")}
+              <span>
+                Up to 30 PDFs, 20 MB each · This device or a locally synced
+                Drive folder
               </span>
             </label>
+            {selectedFiles.length > 0 && (
+              <ul className="source-file-list">
+                {selectedFiles.map((file, index) => (
+                  <li key={`${file.name}-${index}`}>{file.name}</li>
+                ))}
+              </ul>
+            )}
+            <p className="form-note">
+              You will keep this tab open and this device online while another
+              person downloads. Closing or reloading the tab will disconnect
+              this source; you will select the files again to serve them.
+            </p>
+            <div className="info-banner compact">
+              <ShieldCheck size={18} />
+              <p>
+                New files will start as sensitive. You can review their type or
+                ask your connected agent to classify them locally.
+              </p>
+            </div>
             {uploadError && (
-              <div className="inline-error" id="upload-error" role="alert">
+              <div className="inline-error" role="alert">
                 {uploadError}
               </div>
             )}
-            <p className="form-note">
-              Maximum file size: 20 MB (20,971,520 bytes). Keep this page open
-              until the upload finishes.
-            </p>
-            <div className="info-banner compact">
-              <Sparkles size={18} />
-              <p>
-                The document type, sensitivity and expiration will be
-                identified. You can review and correct the result.
+            {busy === "register" && (
+              <p className="form-note" role="status">
+                {sourceStatus}
               </p>
-            </div>
+            )}
             <button
               className="button button-dark button-full"
-              disabled={!selectedFile || busy === "upload"}
+              disabled={!selectedFiles.length || busy === "register"}
             >
-              {busy === "upload" ? (
-                <>
-                  <LoaderCircle size={16} className="spin" />
-                  {uploadPhase || "Preparing upload…"}
-                </>
+              {busy === "register" ? (
+                <LoaderCircle size={16} className="spin" />
               ) : (
-                <>
-                  <Upload size={16} />
-                  {pendingUploadSession?.uploaded
-                    ? "Retry classification"
-                    : pendingUploadSession
-                      ? "Retry upload"
-                      : "Upload document"}
-                </>
-              )}
+                <Plus size={16} />
+              )}{" "}
+              Register documents
             </button>
           </form>
+        </Modal>
+      )}
+      {shareOpen && (
+        <Modal
+          title="Share documents"
+          subtitle="Your partner will receive access through a bridge lasting up to 24 hours."
+          onClose={() => setShareOpen(false)}
+        >
+          <button
+            className="button button-dark button-full"
+            onClick={() => {
+              setShareOpen(false);
+              setInvitation(null);
+              setInvitePurpose(data.purposes[0]?.id || "");
+              setInviteOffers([]);
+              setInviteOpen(true);
+            }}
+          >
+            Invite by email <ArrowRight size={17} />
+          </button>
+          {data.companies.some((company) => company.id !== data.company.id) && (
+            <button
+              className="button button-outline button-full share-existing"
+              onClick={() => {
+                setShareOpen(false);
+                setCounterparty("");
+                setBridgeOpen(true);
+              }}
+            >
+              Connect an existing business partner
+            </button>
+          )}
+          <p className="form-note">
+            Your partner will verify their email and accept the invitation. Each
+            document request will follow your permissions; the original will
+            transfer directly from its source.
+          </p>
         </Modal>
       )}
       {bridgeOpen && (
@@ -2384,8 +2292,8 @@ export default function Home() {
               <span>PDF</span>
             </div>
             <div>
-              <strong>Original PDF preserved</strong>
-              <p>Available to authorized agents through a bridge.</p>
+              <strong>Original remains at its source</strong>
+              <p>The source must be online for an authorized download.</p>
             </div>
             <ShieldCheck size={23} />
           </div>
@@ -2464,16 +2372,29 @@ export default function Home() {
                     `/api/owner/documents/${selectedDoc.id}/download`,
                     { method: "POST" },
                   );
-                  if (delivery.download_url)
-                    window.location.assign(delivery.download_url);
+                  if (!delivery.download_url)
+                    throw new Error("The download link could not be created.");
+                  setOwnerDownloadUrl(delivery.download_url);
                 },
-                "Original PDF is ready. A delivery receipt was recorded.",
+                "Download authorized. Open the link below while keeping this source tab open.",
               )
             }
           >
             <ArrowDownToLine size={16} />
-            Download original PDF
+            {ownerDownloadUrl
+              ? "Refresh download permission"
+              : "Prepare download"}
           </button>
+          {ownerDownloadUrl && (
+            <a
+              className="button button-outline button-full owner-download"
+              href={ownerDownloadUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <ArrowUpRight size={16} /> Download original PDF
+            </a>
+          )}
           <button
             className="button button-dark button-full"
             disabled={!!busy}
@@ -2488,6 +2409,13 @@ export default function Home() {
               </>
             )}
           </button>
+          <DocumentSharingEditor
+            key={selectedDoc.id}
+            documentId={selectedDoc.id}
+            api={api}
+            purposes={data.purposes}
+            onSaved={() => void refresh(true)}
+          />
         </Modal>
       )}
       {decision && (
@@ -3047,7 +2975,7 @@ function AgentPlayground({
             ) : (
               <p className="form-note">
                 {token
-                  ? "No documents are available in the requesting company’s vault."
+                  ? "No documents are registered by the requesting company."
                   : "Your available documents will appear after connecting."}
               </p>
             )}
@@ -3124,7 +3052,7 @@ function AgentPlayground({
                 <br />
                 Every delivery includes the untouched PDF,
                 <br />
-                extracted text and a verifiable receipt.
+                with an integrity receipt after authorization.
               </p>
               <code>POST /api/requests</code>
             </div>
@@ -3230,7 +3158,7 @@ function AgentResult({
               : entry.error
                 ? "Request failed"
                 : delivery?.download_url
-                  ? "Document delivered"
+                  ? "Download authorized"
                   : nice(
                       result?.status || result?.request?.status || "pending",
                     )}
@@ -3238,7 +3166,7 @@ function AgentResult({
           <p>
             {entry.error ||
               (delivery?.download_url
-                ? "Original PDF, extracted text and an integrity receipt."
+                ? "Your source connection will transfer the original PDF when you open the download."
                 : result?.manual_response ||
                   result?.reason ||
                   result?.message ||
@@ -3297,7 +3225,6 @@ function AgentResult({
           <div className="response-tabs">
             {[
               ["receipt", "Receipt"],
-              ["text", "Extracted text"],
               ["raw", "Raw response"],
             ].map(([id, label]) => (
               <button
@@ -3310,14 +3237,11 @@ function AgentResult({
             ))}
           </div>
           <pre className="json-output response-output">
-            {tab === "text"
-              ? delivery?.extracted_text ||
-                "Extracted text will be available after delivery."
-              : tab === "receipt"
-                ? delivery?.receipt
-                  ? JSON.stringify(delivery.receipt, null, 2)
-                  : "A receipt is generated when the original document is delivered."
-                : JSON.stringify(result, null, 2)}
+            {tab === "receipt"
+              ? delivery?.receipt
+                ? JSON.stringify(delivery.receipt, null, 2)
+                : "A receipt is generated when the original document is delivered."
+              : JSON.stringify(result, null, 2)}
           </pre>
         </>
       )}

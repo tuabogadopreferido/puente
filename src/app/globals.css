@@ -3920,3 +3920,426 @@ th {
     font-size: 7px;
   }
 }
+
+/* Main actions replace the old promotional card. */
+.workspace-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.workspace-action {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  position: relative;
+  gap: 14px;
+  padding: 26px;
+  background: #fff;
+  border: 1px solid #d9e3dc;
+  border-radius: 12px;
+  color: #193c31;
+  min-height: 220px;
+}
+.workspace-action:hover {
+  border-color: #6e9985;
+  box-shadow: 0 4px 16px #193c3109;
+}
+.workspace-action:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+.workspace-action-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: #eef3e9;
+}
+.workspace-action strong {
+  font-size: 20px;
+  line-height: 1.25;
+  letter-spacing: -0.35px;
+}
+.workspace-action > span:not(.workspace-action-icon) {
+  font-size: 13px;
+  line-height: 1.55;
+  color: #647c68;
+  padding-right: 8px;
+}
+.workspace-action-primary {
+  background: #193c3c;
+  color: #fff;
+  border-color: #193c3c;
+}
+.workspace-action-primary .workspace-action-icon {
+  background: #ffffff12;
+  color: #bfd4c3;
+}
+.workspace-action-primary > span:not(.workspace-action-icon) {
+  color: #c2d1c4;
+}
+.workspace-action-arrow {
+  position: absolute;
+  top: 25px;
+  right: 23px;
+}
+.email-access-form {
+  display: grid;
+  gap: 17px;
+}
+.email-access-form .form-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.email-access-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.email-access-form input[autocomplete="one-time-code"] {
+  letter-spacing: 0.4em;
+  font-size: 23px;
+}
+.source-file-list {
+  font-size: 13px;
+  line-height: 1.65;
+  padding-left: 20px;
+  max-height: 170px;
+  overflow: auto;
+  margin: 16px 0;
+  overflow-wrap: anywhere;
+}
+.source-online-note {
+  position: fixed;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 35;
+  background: #edf5e9;
+  border: 1px solid #c8d9c0;
+  box-shadow: 0 4px 18px #193c3112;
+  border-radius: 9px;
+  padding: 12px 18px;
+  font-size: 12px;
+  color: #355740;
+  max-width: calc(100vw - 28px);
+}
+.source-online-note svg {
+  flex-shrink: 0;
+}
+.share-existing {
+  margin-top: 14px;
+}
+@media (max-width: 700px) {
+  .workspace-actions {
+    grid-template-columns: 1fr;
+  }
+  .workspace-action {
+    min-height: 172px;
+    padding: 22px;
+  }
+  .workspace-action strong {
+    font-size: 19px;
+  }
+  .source-online-note {
+    bottom: 8px;
+    width: calc(100vw - 24px);
+  }
+}
+.peer-download-page {
+  min-height: 100vh;
+  background: #f4f6f1;
+  padding: 50px 22px;
+}
+.peer-brand {
+  display: block;
+  max-width: 610px;
+  margin: 0 auto 25px;
+  color: #193c31;
+  font-size: 29px;
+  font-weight: 750;
+  letter-spacing: -1.3px;
+  text-decoration: none;
+}
+.peer-download-card {
+  max-width: 610px;
+  margin: auto;
+  padding: 34px;
+  border: 1px solid #dce5dc;
+  border-radius: 16px;
+  background: white;
+}
+.peer-download-card h1 {
+  margin: 24px 0 14px;
+  font-size: 29px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+.peer-download-card > p {
+  font-size: 14px;
+  line-height: 1.65;
+  color: #657665;
+  margin-bottom: 24px;
+}
+.peer-file-facts {
+  display: grid;
+  gap: 15px;
+  padding: 20px;
+  margin: 24px 0;
+  border-radius: 10px;
+  background: #f2f5ed;
+  font-size: 13px;
+}
+.peer-file-facts div {
+  display: flex;
+  justify-content: space-between;
+  gap: 15px;
+}
+.peer-file-facts dt {
+  color: #687b66;
+}
+.peer-file-facts dd {
+  margin: 0;
+  text-align: right;
+}
+.peer-progress {
+  display: grid;
+  gap: 9px;
+  margin: 20px 0;
+  font-size: 13px;
+}
+.peer-progress progress {
+  width: 100%;
+  accent-color: #406f52;
+}
+.peer-download-card .peer-verified {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #355e3c;
+}
+@media (max-width: 500px) {
+  .peer-download-card {
+    padding: 24px;
+  }
+  .peer-download-card h1 {
+    font-size: 24px;
+  }
+  .peer-file-facts div {
+    display: block;
+  }
+  .peer-file-facts dd {
+    text-align: left;
+    margin-top: 7px;
+  }
+}
+@media (min-width: 701px) and (max-width: 1100px) {
+  .overview-row {
+    grid-template-columns: 1fr;
+  }
+  .overview-row .stat-stack {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.email-access-modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 3px;
+}
+.email-access-modes .button {
+  min-width: 0;
+  padding: 12px 10px;
+  white-space: nowrap;
+}
+.email-access-form input[autocomplete="one-time-code"]::placeholder {
+  letter-spacing: normal;
+  font-size: 14px;
+}
+.content-columns.documents-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+.notification-section {
+  margin-bottom: 24px;
+}
+.notification-section h3 {
+  font-size: 14px;
+  margin: 0 0 12px;
+  color: #315140;
+}
+.notification-item {
+  display: flex;
+  width: 100%;
+  gap: 13px;
+  align-items: center;
+  text-align: left;
+  border-top: 1px solid #e7ece5;
+  padding: 14px 0;
+}
+.notification-item > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+.notification-item strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.notification-item small {
+  display: block;
+  color: #73806f;
+  font-size: 11px;
+  margin-top: 5px;
+  line-height: 1.5;
+}
+.notification-item-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: #edf3e8;
+  color: #668b68;
+}
+
+.document-batches {
+  margin: 0 0 26px;
+}
+.batch-content {
+  padding: 0 24px 23px;
+}
+.batch-empty {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #72816e;
+  font-size: 13px;
+  line-height: 1.65;
+}
+.batch-empty svg {
+  flex-shrink: 0;
+}
+.batch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px;
+}
+.batch-card {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  border: 1px solid #dce6d7;
+  border-radius: 10px;
+  padding: 18px;
+  text-align: left;
+  background: #fafcf8;
+}
+.batch-card > svg {
+  color: #729068;
+  flex-shrink: 0;
+}
+.batch-card > span {
+  flex: 1;
+  min-width: 0;
+}
+.batch-card strong {
+  font-size: 14px;
+  display: block;
+  overflow-wrap: anywhere;
+  color: #2e4c36;
+}
+.batch-card small {
+  display: block;
+  margin-top: 6px;
+  color: #78886f;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.batch-card:hover {
+  background: #f1f6ec;
+  border-color: #abc39e;
+}
+.batch-editor {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 30px;
+}
+.batch-editor label,
+.document-sharing-editor label {
+  font-size: 12px;
+}
+.batch-selection-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 21px 0 13px;
+  font-size: 12px;
+}
+.batch-selection-heading .text-button {
+  font-size: 11px;
+  color: #52784a;
+  text-decoration: underline;
+}
+.batch-document-list,
+.sharing-purpose-list {
+  padding: 13px;
+  max-height: 230px;
+  overflow: auto;
+  border: 1px solid #e0e8db;
+  border-radius: 9px;
+  background: #fafcf8;
+}
+.batch-document-list .checkbox-label,
+.sharing-purpose-list .checkbox-label {
+  margin: 0;
+  padding: 9px 0;
+  align-items: flex-start;
+}
+.batch-document-list .checkbox-label input,
+.sharing-purpose-list .checkbox-label input {
+  flex-shrink: 0;
+}
+.batch-document-list .checkbox-label span {
+  overflow-wrap: anywhere;
+}
+.sharing-fields {
+  display: grid;
+  gap: 5px;
+}
+.sharing-purpose-list {
+  margin: 4px 0 15px;
+}
+.document-sharing-editor {
+  border-top: 1px solid #e0e7dc;
+  margin-top: 25px;
+  padding-top: 23px;
+}
+.document-sharing-editor h3 {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  color: #3b5a40;
+  font-size: 16px;
+  margin: 0 0 21px;
+}
+@media (max-width: 760px) {
+  .batch-editor {
+    grid-template-columns: 1fr;
+    gap: 22px;
+  }
+  .batch-content {
+    padding: 0 18px 20px;
+  }
+  .batch-grid {
+    grid-template-columns: 1fr;
+  }
+}
