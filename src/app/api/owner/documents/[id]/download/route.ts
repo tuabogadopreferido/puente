@@ -16,12 +16,9 @@ export async function POST(request: Request, context: Context) {
     ),
   );
 }
-export async function GET(request: Request, context: Context) {
+export async function GET() {
   try {
-    return await downloadOwnerOriginal(
-      z.uuid().parse((await context.params).id),
-      new URL(request.url).searchParams.get("ticket") || "",
-    );
+    return await downloadOwnerOriginal();
   } catch (error) {
     return fail(error);
   }

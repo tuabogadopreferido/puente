@@ -3,12 +3,18 @@ import { admin } from "./supabase-admin";
 import { agentFromHash, sha256, type AgentContext } from "./auth";
 import { ApiError, assertDb } from "./http";
 import { decideAccess } from "./rules";
-import { signReceipt, signDownload } from "./crypto";
+import { signReceipt } from "./crypto";
+import { createPeerTransfer, peerDownloadUrl } from "./peer-server";
 import type { PuenteDocument, Purpose, DocumentRequest } from "./types";
 import { notifyRequest } from "./email";
+import {
+  getDocumentSharing,
+  assertSharingPurpose,
+  assertRequestSharing,
+} from "./document-sharing";
 
 const metadataFields =
-  "id,company_id,title,document_type,expires_at,sensitive,sha256,classification_source,created_at";
+  "id,company_id,title,document_type,expires_at,sensitive,sha256,classification_source,created_at,source_id,size_bytes,batch_id,sharing_override,sharing_revision";
 export async function logEvent(
   companyId: string,
   actorId: string,
@@ -17,16 +23,14 @@ export async function logEvent(
   documentId: string | null = null,
   detail: Record<string, unknown> = {},
 ) {
-  const { error } = await admin()
-    .from("access_events")
-    .insert({
-      company_id: companyId,
-      actor_company_id: actorId,
-      bridge_id: bridgeId,
-      document_id: documentId,
-      action,
-      detail,
-    });
+  const { error } = await admin().from("access_events").insert({
+    company_id: companyId,
+    actor_company_id: actorId,
+    bridge_id: bridgeId,
+    document_id: documentId,
+    action,
+    detail,
+  });
   assertDb(error);
 }
 export async function exchangeCode(code: string) {
@@ -150,6 +154,8 @@ export async function requestDocument(ctx: AgentContext, input: RequestInput) {
   }
   if (!purpose && !input.purpose?.trim() && !input.purpose_id)
     throw new ApiError(400, "Declare the purpose for this document request");
+  const sharing = await getDocumentSharing(doc.company_id, doc.id);
+  assertSharingPurpose(sharing, purpose?.id ?? null);
   const offered = input.offered_document_ids ?? [];
   if (offered.length) {
     const { data: ownDocs, error: oe } = await admin()
@@ -170,7 +176,13 @@ export async function requestDocument(ctx: AgentContext, input: RequestInput) {
     .select("*")
     .eq("company_id", doc.company_id);
   assertDb(re);
-  const decision = decideAccess(doc, purpose, rules ?? [], ctx.actorCompanyId);
+  const decision =
+    sharing.effective.mode === "approval"
+      ? {
+          allowed: false,
+          reason: "The document's sharing settings require an owner decision.",
+        }
+      : decideAccess(doc, purpose, rules ?? [], ctx.actorCompanyId);
   const purposeText =
     purpose?.name ?? input.purpose?.trim() ?? "Unknown declared purpose";
   const { data: request, error } = await admin()
@@ -185,6 +197,7 @@ export async function requestDocument(ctx: AgentContext, input: RequestInput) {
       status: decision.allowed ? "approved" : "pending",
       reason: decision.reason,
       offered_document_ids: offered,
+      sharing_revision: sharing.revision,
     })
     .select("*")
     .single();
@@ -234,6 +247,7 @@ export async function pollRequest(ctx: AgentContext, requestId: string) {
     .maybeSingle();
   assertDb(error);
   if (!row) throw new ApiError(404, "Request not found", "not_found");
+  if (row.status !== "denied") await assertRequestSharing(row);
   if (row.status === "approved") {
     const { data: doc, error: de } = await admin()
       .from("documents")
@@ -264,6 +278,7 @@ async function deliverDocument(
     doc.company_id !== ctx.targetCompanyId
   )
     throw new ApiError(403, "Delivery is not authorized");
+  await assertRequestSharing(request);
   const id = randomUUID();
   const payload = {
     receipt_id: id,
@@ -275,39 +290,36 @@ async function deliverDocument(
     bridge_id: ctx.bridge.id,
     request_id: request.id,
     purpose: request.purpose_text,
-    delivered_at: new Date().toISOString(),
+    authorized_at: new Date().toISOString(),
+    transport: "webrtc",
     original_pdf: true,
   };
   const signed = signReceipt(payload);
-  const { error } = await admin()
-    .from("receipts")
-    .insert({
-      id,
-      company_id: doc.company_id,
-      receiver_company_id: ctx.actorCompanyId,
-      payload,
-      signature: signed.signature,
-      public_key: signed.public_key,
-    });
-  assertDb(error);
-  const exp = Math.min(
-    Date.now() + 60_000,
-    Date.parse(ctx.expiresAt),
-    Date.parse(ctx.bridge.expires_at),
-  );
-  const downloadToken = signDownload({
-    receipt_id: id,
-    token_hash: ctx.tokenHash,
-    exp,
+  const { error } = await admin().from("receipts").insert({
+    id,
+    company_id: doc.company_id,
+    receiver_company_id: ctx.actorCompanyId,
+    payload,
+    signature: signed.signature,
+    public_key: signed.public_key,
   });
-  const base = (
-    process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
-  ).replace(/\/$/, "");
+  assertDb(error);
+  let transfer;
+  try {
+    transfer = await createPeerTransfer(doc, id, ctx);
+  } catch (error) {
+    await admin()
+      .from("receipts")
+      .delete()
+      .eq("id", id)
+      .eq("company_id", doc.company_id);
+    throw error;
+  }
   await logEvent(
     doc.company_id,
     ctx.actorCompanyId,
     ctx.bridge.id,
-    "document_delivered",
+    "peer_transfer_authorized",
     doc.id,
     { receipt_id: id, purpose: request.purpose_text, sha256: doc.sha256 },
   );
@@ -318,9 +330,10 @@ async function deliverDocument(
     title: doc.title,
     original_pdf: true,
     sha256: doc.sha256,
-    download_url: `${base}/api/download?ticket=${encodeURIComponent(downloadToken)}`,
-    download_expires_at: new Date(exp).toISOString(),
-    extracted_text: doc.extracted_text,
+    download_url: peerDownloadUrl(transfer),
+    download_expires_at: transfer.expires_at,
+    transport: "webrtc",
+    transfer,
     receipt: { payload, ...signed },
     offered_document_ids: request.offered_document_ids,
   };
@@ -407,6 +420,8 @@ export async function createBridge(
   counterpartyId: string,
   hours: number,
 ) {
+  if (!Number.isInteger(hours) || hours < 1 || hours > 24)
+    throw new ApiError(400, "Bridge access lasts between 1 and 24 hours");
   if (companyId === counterpartyId)
     throw new ApiError(400, "Choose another company");
   const { data: company, error: ce } = await admin()

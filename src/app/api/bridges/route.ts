@@ -8,7 +8,7 @@ export async function POST(req: Request) {
     const body = z
       .object({
         counterparty_id: z.uuid(),
-        expires_in_hours: z.number().int().min(1).max(720).default(24),
+        expires_in_hours: z.number().int().min(1).max(24).default(24),
       })
       .parse(await req.json());
     return createBridge(

@@ -7,6 +7,8 @@ import {
 import { z } from "zod";
 import { admin } from "@/lib/supabase-admin";
 import type { ApprovalAction, DocumentRequest } from "@/lib/types";
+import { assertRequestSharing } from "@/lib/document-sharing";
+import { ApiError, assertDb } from "@/lib/http";
 
 export const approvalActionSchema = z.enum(["approve", "deny", "manual"]);
 const tokenSchema = z.object({
@@ -166,6 +168,17 @@ export async function resolveRequest({
   const parsedAction = approvalActionSchema.parse(action);
   if (parsedAction === "manual" && !manualResponse?.trim())
     throw new Error("Enter a response for the requesting agent.");
+  if (parsedAction === "approve") {
+    const { data: request, error: requestError } = await admin()
+      .from("requests")
+      .select("*")
+      .eq("id", requestId)
+      .eq("owner_company_id", ownerCompanyId)
+      .maybeSingle();
+    assertDb(requestError);
+    if (!request) throw new ApiError(404, "Request not found", "not_found");
+    await assertRequestSharing(request as DocumentRequest);
+  }
   const { data, error } = await admin().rpc("resolve_access_request", {
     p_request_id: z.string().uuid().parse(requestId),
     p_owner_company_id: z.string().uuid().parse(ownerCompanyId),
@@ -192,6 +205,10 @@ export async function resolveTokenApproval({
   const claims = verifyApprovalToken(token);
   if (claims.action === "manual" && !manualResponse?.trim())
     throw new Error("Enter a response for the requesting agent.");
+  if (claims.action === "approve") {
+    const inspected = await inspectApproval(token);
+    await assertRequestSharing(inspected.request);
+  }
   const { data, error } = await admin().rpc("consume_approval_link", {
     p_token_hash: hashApprovalToken(token),
     p_action: claims.action,

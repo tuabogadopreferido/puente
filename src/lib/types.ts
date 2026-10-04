@@ -44,6 +44,15 @@ export interface Document {
   sha256: string;
   storage_path: string;
   extracted_text: string;
+  source_id?: string;
+  source_key?: string;
+  size_bytes?: number;
+  batch_id?: UUID | null;
+  sharing_override?: {
+    mode: "rules" | "approval";
+    allowed_purpose_ids: UUID[] | null;
+  } | null;
+  sharing_revision?: number;
   classification_source: string;
   created_at: string;
 }
@@ -92,6 +101,7 @@ export interface DocumentRequest {
   status: RequestStatus;
   reason: string;
   offered_document_ids: UUID[];
+  sharing_revision?: string;
   manual_response: string | null;
   email_thread_id: string | null;
   email_message_id: string | null;

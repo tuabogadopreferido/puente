@@ -1,17 +1,17 @@
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { admin } from "@/lib/supabase-admin";
 import {
   requireAgentToken,
   requireOwner,
-  sha256,
+  recheckHumanSession,
   type AgentContext,
 } from "@/lib/auth";
 import { dashboard } from "@/lib/core";
 import { signReceipt } from "@/lib/crypto";
 import { ApiError, assertDb } from "@/lib/http";
 import type { PuenteDocument } from "@/lib/types";
-import { streamPdfResponse } from "@/lib/pdf-response";
+import { createPeerTransfer, peerDownloadUrl } from "@/lib/peer-server";
 import {
   authenticateOwnerAgentConnection,
   recheckOwnerAgentConnection,
@@ -24,33 +24,10 @@ export interface OwnerAgentContext {
   companyId: string;
   expiresAt: number;
   connectionId?: string;
+  humanSessionId?: string;
 }
 export type McpAuthContext =
   OwnerAgentContext | { kind: "counterparty"; agent: AgentContext };
-const ownerTicketSchema = z.object({
-  version: z.literal(1),
-  scope: z.literal("owner"),
-  user_id: z.uuid(),
-  company_id: z.uuid(),
-  document_id: z.uuid(),
-  receipt_id: z.uuid(),
-  connection_id: z.uuid().optional(),
-  exp: z.number().int(),
-});
-type OwnerTicket = z.infer<typeof ownerTicketSchema>;
-const namespace = "puente.owner-download.v1:";
-function signingKey() {
-  const key = process.env.APP_SIGNING_SECRET;
-  if (!key || key.length < 32)
-    throw new ApiError(503, "Owner download signing is not configured");
-  return key;
-}
-function mac(value: string) {
-  return createHmac("sha256", signingKey())
-    .update(namespace + value)
-    .digest();
-}
-
 /** Auth scope is derived exclusively from verified credentials, never a supplied company ID. */
 export async function requireOwnerAgentToken(
   token: string,
@@ -93,9 +70,15 @@ export async function requireOwnerAgentToken(
   } catch {
     throw new ApiError(401, "Invalid owner access token", "unauthorized");
   }
+  expiresAt = Math.min(expiresAt, Date.parse(owner.humanExpiresAt));
   if (expiresAt <= Date.now())
     throw new ApiError(401, "Owner access token has expired", "unauthorized");
-  return { kind: "owner", ...owner, expiresAt };
+  return {
+    kind: "owner",
+    ...owner,
+    humanSessionId: owner.humanSessionId,
+    expiresAt,
+  };
 }
 export async function authenticateMcpToken(
   token: string,
@@ -130,6 +113,15 @@ async function recheckOwner(
     await recheckOwnerAgentConnection({ userId, companyId }, connectionId);
 }
 export async function recheckOwnerAgentContext(ctx: OwnerAgentContext) {
+  if (!ctx.connectionId) {
+    if (!ctx.humanSessionId)
+      throw new ApiError(
+        401,
+        "A current human session is required",
+        "unauthorized",
+      );
+    await recheckHumanSession(ctx.userId, ctx.humanSessionId);
+  }
   await recheckOwner(
     ctx.userId,
     ctx.companyId,
@@ -184,34 +176,6 @@ export async function ownerRequestStatus(
     throw new ApiError(404, "Request not found in your company", "not_found");
   return { access_scope: "owner", request: data };
 }
-function createOwnerTicket(payload: OwnerTicket) {
-  const raw = Buffer.from(
-    JSON.stringify(ownerTicketSchema.parse(payload)),
-  ).toString("base64url");
-  return `${raw}.${mac(raw).toString("base64url")}`;
-}
-function readOwnerTicket(value: string) {
-  if (!value || value.length > 2000)
-    throw new ApiError(401, "Invalid owner download ticket");
-  const [raw, signature, extra] = value.split(".");
-  if (!raw || !signature || extra)
-    throw new ApiError(401, "Invalid owner download ticket");
-  const expected = mac(raw),
-    actual = Buffer.from(signature, "base64url");
-  if (expected.length !== actual.length || !timingSafeEqual(expected, actual))
-    throw new ApiError(401, "Invalid owner download signature");
-  let payload: OwnerTicket;
-  try {
-    payload = ownerTicketSchema.parse(
-      JSON.parse(Buffer.from(raw, "base64url").toString("utf8")),
-    );
-  } catch {
-    throw new ApiError(401, "Invalid owner download ticket");
-  }
-  if (payload.exp <= Date.now())
-    throw new ApiError(401, "Owner download ticket expired");
-  return payload;
-}
 async function ownerAudit(
   companyId: string,
   documentId: string,
@@ -227,7 +191,7 @@ async function ownerAudit(
       actor_company_id: companyId,
       bridge_id: null,
       document_id: documentId,
-      action: "owner_document_delivered",
+      action: "owner_peer_transfer_authorized",
       detail: {
         access_scope: "owner",
         receipt_id: receiptId,
@@ -267,8 +231,9 @@ export async function getOwnerDocument(
     bridge_id: null,
     request_id: null,
     purpose: "Internal company document administration",
-    delivered_at: new Date().toISOString(),
+    authorized_at: new Date().toISOString(),
     original_pdf: true,
+    transport: "webrtc",
   };
   const signed = signReceipt(payload);
   const { error: receiptError } = await admin().from("receipts").insert({
@@ -280,20 +245,17 @@ export async function getOwnerDocument(
     public_key: signed.public_key,
   });
   assertDb(receiptError);
-  const exp = Math.min(Date.now() + 60_000, ctx.expiresAt);
-  const ticket = createOwnerTicket({
-    version: 1,
-    scope: "owner",
-    user_id: ctx.userId,
-    company_id: ctx.companyId,
-    document_id: doc.id,
-    receipt_id: receiptId,
-    ...(ctx.connectionId ? { connection_id: ctx.connectionId } : {}),
-    exp,
-  });
-  const base = (
-    process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
-  ).replace(/\/$/, "");
+  let transfer;
+  try {
+    transfer = await createPeerTransfer(doc, receiptId, ctx);
+  } catch (error) {
+    await admin()
+      .from("receipts")
+      .delete()
+      .eq("id", receiptId)
+      .eq("company_id", ctx.companyId);
+    throw error;
+  }
   await ownerAudit(
     ctx.companyId,
     doc.id,
@@ -310,87 +272,17 @@ export async function getOwnerDocument(
     title: doc.title,
     original_pdf: true,
     sha256: doc.sha256,
-    download_url: `${base}/api/owner/documents/${doc.id}/download?ticket=${encodeURIComponent(ticket)}`,
-    download_expires_at: new Date(exp).toISOString(),
-    extracted_text: doc.extracted_text,
+    transport: "webrtc",
+    transfer,
+    download_url: peerDownloadUrl(transfer),
+    download_expires_at: transfer.expires_at,
     receipt: { payload, ...signed },
   };
 }
-export async function downloadOwnerOriginal(
-  documentId: string,
-  ticket: string,
-) {
-  const claims = readOwnerTicket(ticket);
-  if (claims.document_id !== documentId)
-    throw new ApiError(
-      403,
-      "Download ticket belongs to a different document",
-      "forbidden",
-    );
-  await recheckOwner(
-    claims.user_id,
-    claims.company_id,
-    claims.exp,
-    claims.connection_id,
+export async function downloadOwnerOriginal(): Promise<Response> {
+  throw new ApiError(
+    410,
+    "Stored downloads have been retired. Request a new peer transfer from the document source.",
+    "peer_transfer_required",
   );
-  const { data: receipt, error } = await admin()
-    .from("receipts")
-    .select("payload")
-    .eq("id", claims.receipt_id)
-    .eq("company_id", claims.company_id)
-    .eq("receiver_company_id", claims.company_id)
-    .maybeSingle();
-  assertDb(error);
-  if (
-    !receipt ||
-    receipt.payload.scope !== "owner" ||
-    receipt.payload.owner_user_id !== claims.user_id ||
-    receipt.payload.document_id !== documentId ||
-    receipt.payload.bridge_id !== null ||
-    (receipt.payload.owner_connection_id ?? undefined) !== claims.connection_id
-  )
-    throw new ApiError(403, "Receipt is outside owner scope", "forbidden");
-  const { data: doc, error: docError } = await admin()
-    .from("documents")
-    .select("title,storage_path,sha256")
-    .eq("id", documentId)
-    .eq("company_id", claims.company_id)
-    .maybeSingle();
-  assertDb(docError);
-  if (!doc)
-    throw new ApiError(404, "Original document unavailable", "not_found");
-  const { data: file, error: fileError } = await admin()
-    .storage.from("documents")
-    .download(doc.storage_path);
-  assertDb(fileError);
-  if (!file) throw new ApiError(404, "Original PDF unavailable", "not_found");
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  if (
-    sha256(bytes) !== receipt.payload.sha256 ||
-    doc.sha256 !== receipt.payload.sha256
-  )
-    throw new ApiError(409, "Original file integrity check failed");
-  await recheckOwner(
-    claims.user_id,
-    claims.company_id,
-    claims.exp,
-    claims.connection_id,
-  );
-  await ownerAudit(
-    claims.company_id,
-    documentId,
-    claims.receipt_id,
-    claims.user_id,
-    "downloaded",
-    claims.connection_id,
-  );
-  await recheckOwner(
-    claims.user_id,
-    claims.company_id,
-    claims.exp,
-    claims.connection_id,
-  );
-  const response = streamPdfResponse(bytes, doc.title, doc.sha256);
-  response.headers.set("Referrer-Policy", "no-referrer");
-  return response;
 }
