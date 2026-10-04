@@ -1,4 +1,23 @@
-# Verification evidence
+# MVP verification evidence
+
+Current architecture: passwordless accounts, metadata-only catalog and direct WebRTC file transfers. Historical evidence below concerns the retired storage-based prototype and does not establish current functionality.
+
+## Current checks, 4 October 2026
+
+- Email authentication: 8 integration groups pass. These cover native Supabase OTP verification, fixed 30-day sessions, tenant isolation, replay and rate limits, logout, and independence from owner-agent credentials. An email-only sign-in preserves an existing account's profile.
+- Real AgentMail transport: a code sent to the project's own inbox was retrieved from its sent message and successfully verified. This confirms sender acceptance and the code flow; delivery to a separate external inbox has not been asserted.
+- Direct transfers: 11 local integration groups pass against the live metadata database. Owner and counterpart receivers each receive 20 MiB with matching SHA-256. Bad secrets, foreign tenants, premature acknowledgement, revoked access, offline sources and changed document sharing settings are rejected. Duplicate completion frames and acknowledgements do not create duplicate receipt events.
+- Native browser: a synthetic PDF was received from a second browser tab with SHA-256 verification. No PDF bytes were uploaded to the application or Storage. The saved PDF in the local Downloads directory had the exact original SHA-256.
+- Batch settings: 8 integration groups pass, including inheritance, overrides, purpose restrictions, cross-tenant rejection, stale approvals and revoked owner access. Native UI creation with document selection succeeded.
+- Cleanup removed the old 17 originals, demo companies and demo Auth users. The Storage bucket was removed. Test harnesses delete their fixtures.
+- Expired peer signaling is cleared by the database cleanup job. Peer-transfer completion is atomic and clears signaling once acknowledged. A receipt records authorization; the subsequent receiver event records reported completion.
+
+Production verification of this replacement is recorded after deployment below. Browser-to-browser transfer needs the source online. There is no hosted TURN relay and no cloud-only Drive OAuth integration; synchronized Drive folders work through the local connector.
+
+## Historical prototype evidence
+
+The following observations are retained as history. Do not run its seed or storage-based harnesses against the current MVP database.
+
 
 Verified on 2026-10-03 using fictional Acme Supplies and Globex Servicios data.
 

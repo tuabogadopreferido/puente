@@ -1,248 +1,70 @@
 # Puente
 
-**Private corporate document exchange for AI agents.**
+Puente coordinates document permissions between company agents. Original PDFs stay on the owner's device or synchronized Drive folder. The recipient downloads them through an encrypted WebRTC data channel; Puente keeps the catalog, permissions and audit records without storing file contents.
 
-[Live demo](https://puente-phi.vercel.app) · [MCP endpoint](https://puente-phi.vercel.app/api/mcp) · [Agent guide](https://puente-phi.vercel.app/llms.txt) · [OpenAPI](https://puente-phi.vercel.app/api/openapi)
+[Open Puente](https://puente-phi.vercel.app) · [Step-by-step checklist](https://puente-phi.vercel.app/guia.html) · [Agent instructions](https://puente-phi.vercel.app/llms.txt) · [OpenAPI](https://puente-phi.vercel.app/api/openapi)
 
-Companies repeatedly send the same vendor onboarding documents by email. Puente keeps each corporate dossier private and lets agents request original PDFs through a bilateral permission called a **bridge**. Every counterparty request declares its purpose; offering the requesting company's own documents is optional. Owner rules approve routine requests; exceptions go to a human.
+## Sign in
 
-Built for the Supabase Select 2026 Hackathon. Mexico is the first market; the API and MCP are model-agnostic. All demo companies, people, tax identifiers and documents are fictional.
+You will choose **Sign in** and enter your email, or select **Create account** to provide your name and email. In both cases you will enter the one-use code sent by AgentMail. The code lasts ten minutes. Supabase Auth verifies it and Puente creates an empty workspace associated with that verified identity. Your human session lasts 30 days from login. API checks and row-level security enforce the deadline, including after token refresh. Signing out ends that session immediately.
 
-## Try the demo
+The former Acme and Globex demo accounts, their documents and the Storage bucket were removed. There are no shared demo credentials. A new account starts with no documents, bridges or requests; four configurable business purposes are available.
 
-You will sign in at the live demo with either fictional company:
+## Connect and share
 
-| Company | Email | Demo-only password |
-| --- | --- | --- |
-| Acme Supplies | `acme@puente.demo` | `PuenteDemo2026!` |
-| Globex Servicios | `globex@puente.demo` | `PuenteDemo2026!` |
+**Connect my agent** will create a private owner connection. Its `po_` token has no automatic expiry and the server stores only its hash. The creating person can revoke it in the interface, or the agent can call `revoke_owner_access` to revoke itself. The owner agent can register file metadata, correct classification, establish bridges and decide incoming requests.
 
-These are deliberately public test accounts. You will use synthetic files only.
+**Share docs** will open the invitation flow. A counterpart will sign in with its invited email and accept a 24-hour bilateral bridge. A one-use bridge code produces a `pt_` token scoped to the counterpart and lasting up to 24 hours. The receiving agent will declare its purpose when requesting files. Returning documents is optional.
 
-1. In **Bridges**, you will issue a one-time code for Globex on the Acme–Globex bridge.
-2. In **Agent playground**, you will exchange that code, select the SAT compliance opinion and the purpose **Alta como proveedor**. You may leave offers empty or choose Globex documents to offer.
-3. The agent will receive the **unchanged original PDF**, extracted text and an **Ed25519-signed receipt** binding the SHA-256, recipient, bridge, purpose and delivery time.
-4. You will request the balance sheet to create a human review. From **Requests**, the owner will approve it; polling will then deliver the original. Production AgentMail also sends the owner a review email with three signed decision links.
-5. In **Activity**, the owner will see the access through Supabase Realtime. Revoking the bridge will block the next API/MCP call and any previously issued download link.
+To serve files, the owner will either keep selected PDFs connected in a browser tab or run the [local source connector](docs/source-agent.md). Registering a file sends only its title, type, expiry, sensitivity, size, SHA-256 and opaque source identifiers. Local paths, PDF bytes and extracted text are not sent to Puente. The agent will classify files locally; the owner can correct the metadata in the interface.
 
-The demo contains an expired proof of address so you can also test an expiry exception. A new bridge can be created if another visitor has revoked the shared demo bridge.
+An approved request returns a direct-transfer descriptor and an Ed25519 authorization receipt. The source and recipient then establish their WebRTC connection. The receiver verifies the expected byte length and SHA-256 before saving. A receipt alone does not prove receipt of the original; successful reception is recorded separately as a receiver-reported event.
 
-## Decision model
+## Document batches and exceptions
 
-A request is automatic only when the document is classified, current, nonfinancial and covered by an owner rule for **document type × counterparty × purpose**. Purposes come from the owner's closed privacy-notice list.
+You will create a batch to group documents under the same sharing settings: existing permission policies or approval for every request, plus all configured purposes or a selected subset. Each document can inherit its batch settings or use an individual override. An empty selected-purpose list allows no requests. Financial documents continue to require approval.
 
-Financial statements and tax returns, expired files with no current replacement, unknown classifications, unlisted purposes and unmatched rules require owner review. Supplier onboarding materials such as bank covers, tax-status certificates, SAT opinions, incorporation deeds and representative IDs are routine documents. The owner can correct Claude's classification.
+Changing sharing settings, moving a document or changing its classification invalidates earlier requests and counterpart transfer permissions. A new request is required. Recent activity and pending requests appear in the notification bell at the upper right.
 
-Approvals apply to a specific request. “Approve and create rule” is available for eligible routine documents; financial information always requires another approval on its next request. Manual responses submitted through the dashboard, signed review page or verified email reply never grant access. An offered document also remains subject to its owner's rules in the reverse direction.
+## Permission lifetimes
 
-## Interactive walkthrough
+| Credential          | Lifetime                                                 | Purpose                                    |
+| ------------------- | -------------------------------------------------------- | ------------------------------------------ |
+| Human session       | 30 days from login, or until logout                      | Workspace administration                   |
+| Owner agent `po_`   | Until its creator or the agent revokes it                | Operate only the owner's workspace         |
+| Counterpart `pt_`   | Up to 24 hours, bounded by the bridge                    | Request documents under that bridge        |
+| Transfer capability | Up to five minutes, bounded by its underlying permission | Establish and complete one direct transfer |
 
-The [Spanish step-by-step guide](https://puente-phi.vercel.app/guia.html) offers 40 individual checklist instructions across six stages, saves progress in the reader’s browser and includes visual references. The standalone HTML is also available in `public/guia.html`.
+Revoking a bridge does not revoke the owner's agent. Revoking an agent does not revoke a bridge, although that agent can no longer serve its source. Both participants periodically recheck authorization during a transfer. Bytes already received cannot be recalled.
 
-## Architecture
+Financial, expired, unclassified and uncovered requests require an owner decision. Routine documents may use explicitly saved rules for approved business purposes. AgentMail routes review messages to the owning workspace's verified contact email. A manual email reply does not grant access.
 
-```mermaid
-flowchart LR
-  Agent[External or internal agent] --> MCP[MCP]
-  Agent --> REST[REST + OpenAPI]
-  Human[Company owner] --> UI[Next.js dashboard]
-  MCP --> Core[Shared authorization and rules]
-  REST --> Core
-  UI --> Core
-  Core --> DB[Supabase Postgres + RLS]
-  Core --> Storage[Private Supabase Storage]
-  DB --> Realtime[Supabase Realtime]
-  Realtime --> UI
-  Core --> Claude[Claude Opus 5.5 via Anthropic]
-  Core --> Mail[AgentMail owner review]
-```
+## Availability
 
-Supabase provides the database, owner authentication, tenant row isolation, private originals, atomic single-use credential redemption and Realtime events. Vercel hosts Next.js and the MCP/REST endpoints. The AI SDK calls Claude Opus 5.5 directly through Anthropic with workspace routing and low effort; AI Gateway is available when no direct key is configured. AgentMail sends owner-review messages and receives manual replies through its production webhook. A verified reply records the owner's instructions without releasing the requested document.
+The serving device and connector must stay online during transfer. The browser source stops when its tab closes; the local connector can run independently of the interface. A synchronized Google Drive folder is supported as a local source. Cloud-only Drive OAuth integration is not configured.
 
-See [database contract](docs/schema.md) and [verification](docs/verification.md).
+This release uses WebRTC with STUN. Restrictive networks that require TURN may prevent a direct connection; the receiver reports a connection failure instead of pretending to deliver a file. No TURN service or persistent Storage fallback is configured. Each source supports up to 30 selected PDFs, each up to 20 MiB.
 
-## Run locally
+## Infrastructure
 
-Requirements: Node.js 22+, npm and a Supabase project. You will run:
+The application runs on Next.js/Vercel. Supabase PostgreSQL stores verified user memberships, metadata, rules, bridges, requests, receipts and short-lived signaling. Supabase Auth issues and refreshes identity tokens. AgentMail delivers access codes and review messages.
 
-```bash
-npm ci
-cp config.example.env .env.local
-```
+Production uses the Supabase organization **tuabogadopreferido**, project **puente** (`iuhxutsngsmpzjaklzlp`, `us-west-1`), database **postgres** on PostgreSQL 17. The old private `documents` Storage bucket has been deleted. The database rejects documents containing a storage path or extracted text.
 
-You will put your project keys in the ignored `.env.local`. The example keeps the deliberately public fixture password `PuenteDemo2026!`, which matches the **Try the live demo** button. If you change `PUENTE_DEMO_PASSWORD` before the first seed, you will use the manual email/password form with that value; the public demo button continues to target the published fixture credentials. The service-role key stays server-side. Generate application signing material locally:
+## Development
 
-```bash
-node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))'
-node -e 'const c=require("node:crypto");const k=c.generateKeyPairSync("ed25519").privateKey;console.log(Buffer.from(k.export({type:"pkcs8",format:"pem"})).toString("base64"))'
-```
+You will use Node.js 22 or later, install the locked dependencies with `npm ci`, and put your configuration in the ignored `.env.local`. Required server variables are `SUPABASE_SERVICE_ROLE_KEY`, `APP_SIGNING_SECRET`, `APPROVAL_SIGNING_SECRET`, `RECEIPT_PRIVATE_KEY`, `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID` and, for replies, `AGENTMAIL_WEBHOOK_SECRET`. Browser-safe variables are `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` and `NEXT_PUBLIC_APP_URL`.
 
-You will generate two different random secrets for `APP_SIGNING_SECRET` and `APPROVAL_SIGNING_SECRET`; the second command supplies `RECEIPT_PRIVATE_KEY`. Keep the private key stable across deploys so old receipts continue to verify.
+You will apply the migrations in `supabase/migrations/` in order, then run `npm run dev`. Migration `email_otp_human_sessions` establishes verified onboarding and the 30-day session boundary. Migration `peer_document_sources` replaces Storage uploads with source metadata and signaling. Existing installations require an explicitly authorized data migration; this project was reset by its owner before the change. Never delete another installation's files as an automatic upgrade.
 
-Apply the SQL files in `supabase/migrations/` in filename order using the Supabase CLI or SQL editor. Then seed only your dedicated fictional demo project:
+`npm run lint`, `npx tsc --noEmit` and `npm run build` check the application. The current authentication regression is `node --env-file=.env.local --import tsx scripts/email-auth-verify.ts --execute`. It creates and removes isolated fixtures and does not send email. See [verification evidence](docs/verification.md) for executed tests and their limits.
 
-```bash
-npm run seed
-npm run dev
-```
+Historical hackathon Storage/seed tests describe the retired architecture. The legacy seed command is restricted to localhost and must not run against the production MVP. No keys, credentials, live transfer descriptors or private source manifests belong in git.
 
-Seeding creates two test Auth users, 16 PDFs, eight privacy purposes, 14 bilateral rules and one bridge. It is a demo fixture reset, including bridge status; never run it against a client database. The seeded documents remain labeled owner-reviewed. The verified Claude classification run used two separate temporary uploads and did not change those fixture labels.
+## Protocol
 
-For Claude, set `ANTHROPIC_API_KEY` and, for a personal key, `ANTHROPIC_WORKSPACE_ID`. Direct Anthropic takes priority over Gateway/OIDC and defaults to `claude-opus-5-5` with `effort: low`. Set `ANTHROPIC_MODEL` to override the direct model. Without a direct key, Vercel's deployment OIDC or `AI_GATEWAY_API_KEY` selects Gateway with `PUENTE_CLAUDE_MODEL` (default `anthropic/claude-opus-5.5`). If no accessible model is configured, originals are retained with **awaiting owner review**; the app never claims AI classification succeeded.
+The MCP endpoint is `/api/mcp` (Streamable HTTP, protocol implementation version 2.0.0). Both permanent owner credentials and current human JWTs are accepted by owner tools; counterparties use bridge tokens. The [live agent guide](https://puente-phi.vercel.app/llms.txt) and OpenAPI specify the contracts.
 
-## Connect an agent
+Owner tools include `register_source`, `register_document`, `correct_document_classification`, `list_document_batches`, `create_document_batch`, `update_document_batch`, `set_document_sharing`, `create_bridge`, `issue_access_code`, `revoke_bridge`, `list_requests`, `decide_request` and `revoke_owner_access`. Counterparts use `exchange_code`, `list_documents`, `request_document`, `get_document` and `get_request_status`. Receipt verification is public for caller-supplied data.
 
-A Streamable HTTP MCP client will use:
-
-```json
-{
-  "mcpServers": {
-    "puente": { "type": "http", "url": "https://puente-phi.vercel.app/api/mcp" }
-  }
-}
-```
-
-The agent will call `exchange_code` with a code issued by the owner, then `list_documents` and `get_document` (or `request_document`). The returned token will travel in the `Authorization: Bearer` header or the tool's `token` argument. `get_request_status` checks a pending human decision. `verify_receipt` validates an Ed25519 receipt against this server's public key.
-
-### Connect your company's agent
-
-You will open **Connect my agent** from the dashboard's Developer navigation or Document vault, enter an **Agent name**, and select **Create agent access**. **Copy MCP configuration** will copy the new private credential into configuration for a Streamable HTTP client that supports custom Authorization headers. You will copy **Copy agent instructions** separately; those instructions contain no credential.
-
-The owner credential has a `po_` prefix and **no scheduled expiration**. The server will store only its SHA-256 hash and recheck active owner membership on each action. The raw token will be returned only when created and kept in the panel's memory until it closes or you sign out. You will keep the copied configuration private; if you lose it, you will create new access and revoke the old connection.
-
-The copied configuration will follow this shape; the value below is a placeholder:
-
-```json
-{
-  "mcpServers": {
-    "puente_owner": {
-      "type": "http",
-      "url": "https://puente-phi.vercel.app/api/mcp",
-      "headers": { "Authorization": "Bearer OWNER_AGENT_TOKEN" }
-    }
-  }
-}
-```
-
-The connection's creator will revoke it under **Connect my agent** by selecting **Revoke access** and confirming **Revoke access now**. The connected agent can revoke its own credential with `revoke_owner_access`. Revoking this owner connection will block its future calls and the internal download tickets issued to it. Existing bridges, counterparty tokens and counterparty download permissions will remain unchanged.
-
-A Supabase Auth access JWT remains supported for legacy owner MCP clients, with its normal session expiry. Durable owner credentials are the preferred agent connection. The same `list_documents`, `get_document`, `request_document` and `get_request_status` tools will recognize the verified scope: owners will operate on their own company; counterparty bridge tokens will operate through a bilateral bridge. Offers will remain empty when omitted, and any offered IDs must belong to the requester.
-
-Owner-only tools include `prepare_document_upload`, `complete_document_upload`, `correct_document_classification`, `create_bridge`, `issue_access_code`, `revoke_bridge`, `list_requests` and `decide_request`. Only a durable owner credential can call `revoke_owner_access`. Counterparty bridge tokens cannot call owner-only tools.
-
-### Upload as the company owner
-
-The dashboard's **Upload document** button will add originals to your own company's vault. Your company agent will use the following MCP sequence for a PDF up to 20 MiB (20,971,520 bytes) and 80 pages:
-
-1. It will call `prepare_document_upload({filename, size})`, with the exact original byte count. The server will select the company and private object path and return `uploadId`, `upload_url`, `method`, `content_type`, `headers` and instructions.
-2. The agent will send the unchanged PDF as the raw binary body of a `PUT` to that returned signed URL, using the returned headers. The signed URL supplies upload authorization; it needs no `Authorization` or `apikey` header. PDF bytes and base64 will never be sent to MCP or JSON application routes.
-3. It will call `complete_document_upload({uploadId})` with the same owner credential and read `{document, notice}`. An owner-review notice will be presented as such. After an uncertain upload or completion response, it will retry completion with the same `uploadId`; completed sessions will return the same document.
-
-### Correct classification through MCP
-
-Your owner agent will call `correct_document_classification({document_id, document_type?, sensitive?, expires_at?, token?})` with its durable `po_` credential or legacy owner JWT. The `token` argument will be optional when the credential is in the Authorization header. The server will recheck active owner membership and credential revocation; a counterparty bridge token will not authorize a correction.
-
-Each call will include at least one correction field; unknown fields will be rejected. `expires_at` will accept a valid calendar date in `YYYY-MM-DD` form, or `null` to clear it. Omitting a field will preserve its value, except that sensitivity will follow the effective document type:
-
-| Effective document type | Sensitivity |
-| --- | --- |
-| `balance_sheet`, `income_statement`, `tax_return` | Always `true` |
-| `tax_status`, `tax_compliance`, `incorporation`, `power_of_attorney`, `bank_cover`, `proof_of_address`, `repse`, `representative_id` | Always `false` |
-| `other` | Owner-selected `sensitive`; the current value will be retained if omitted |
-
-For example, the agent will use `{document_id: DOCUMENT_ID, document_type: "tax_compliance", expires_at: "2026-12-31"}` to correct a compliance opinion, or `{document_id: DOCUMENT_ID, expires_at: null}` to clear an expiry. `DOCUMENT_ID` represents the ID returned by `list_documents`.
-
-The result will contain `id`, `title`, `document_type`, `sensitive`, `expires_at` and `classification_source: "owner_reviewed"`. The original PDF bytes and SHA-256 will remain unchanged. This will record an owner correction, not a new AI classification.
-
-### Browser REST administration
-
-The browser will use its **Supabase Auth JWT** for connection management, uploads and the other owner REST administration routes below. Those routes will not accept a durable `po_` credential. Classification correction is the exception: `PATCH /api/documents/{id}` will accept either owner credential and the same strict correction fields as MCP, without `document_id` or `token` in the body.
-
-| Method and path | Result |
-| --- | --- |
-| `GET /api/owner/agent-connections` | Creator's connection metadata: `id`, `label`, `created_at`, `revoked_at`; no token |
-| `POST /api/owner/agent-connections` with `{label}` | New `{connection, token}`; raw token returned only once |
-| `POST /api/owner/agent-connections/{id}/revoke` | Revocation of the creator's specific connection |
-
-Browser uploads will use `POST /api/documents/upload/init` with `{filename,size}`, send the original directly through Supabase `uploadToSignedUrl(path, token, file, {contentType: 'application/pdf', upsert: false})`, and call `POST /api/documents/upload/complete` with `{uploadId}`. Both application calls will use the same owner JWT. The legacy multipart `/api/documents/upload` route accepts at most 4 MiB.
-
-Other owner REST routes include `GET /api/dashboard`, `GET /api/owner/documents`, `POST /api/owner/documents/{id}/download`, classification corrections, bridge administration, owner decisions and invitations. The [OpenAPI document](https://puente-phi.vercel.app/api/openapi) describes their bodies and authentication.
-
-### Invite another company
-
-An owner can invite a company from **Bridges**, selecting a closed-list purpose and optionally offering its own documents. `POST /api/invitations` accepts `{email, company_name, purpose_id, offered_document_ids}` and returns a private, signed link valid for 24 hours. AgentMail sends only to the configured demo reviewer; otherwise the owner can copy the link for the intended recipient.
-
-The recipient opens `/invite`, signs up or signs in with the invited email, and confirms that mailbox through Supabase Auth. Acceptance creates a company and default purposes if needed, then a bilateral bridge. It does not release documents or create sharing rules. The API exposes only invitation metadata before acceptance, and repeated acceptance by the same verified user is idempotent.
-
-**Current deployment limit:** Supabase email confirmation remains enabled, but custom Auth SMTP is not configured. The default sender only permits project-team addresses, so a new external recipient cannot complete email signup until Auth SMTP is configured. Existing confirmed demo accounts can exercise invitation acceptance. The signed invitation flow and verified-user acceptance were tested; delivery and confirmation for a new external mailbox remain unverified. See [Supabase Auth SMTP requirements](https://supabase.com/docs/guides/auth/auth-smtp).
-
-REST uses the same decision core:
-
-```bash
-curl -X POST "$BASE/api/access/exchange" \
-  -H 'Content-Type: application/json' -d '{"code":"ONE_TIME_CODE"}'
-
-curl "$BASE/api/documents" -H "Authorization: Bearer $TOKEN"
-
-curl -X POST "$BASE/api/requests" \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"document_id":"DOCUMENT_UUID","purpose_id":"PURPOSE_UUID","offered_document_ids":["OWN_DOCUMENT_UUID"]}'
-```
-
-The response includes either `status: delivered` with a 60-second original download URL, text, hash and receipt, or `status: pending` with a request ID. The PDF download proxy checks the current token and bridge again and verifies the stored original hash before serving bytes.
-
-## Email configuration
-
-You will configure `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID` and `PUENTE_REVIEW_EMAIL`. Demo mail goes only to that explicitly configured reviewer. The three actions are **Approve**, **Do not approve**, and **Give a manual response**. Links are signed, single-use and expire after 24 hours. GET opens a confirmation page; POST performs the decision, so link scanners cannot approve anything.
-
-**Production delivery verified:** AgentMail configuration is present in production, and an automatic review message reached the configured Gmail mailbox in Spam with all three signed decision links. A fresh seven-check production run verified that message's signed approval, byte-preserving original delivery, SHA-256, Ed25519, replay rejection, revocation and temporary-record cleanup. The earlier operator-run SMTP roundtrip also passed.
-
-**Inbound manual replies verified:** the production `message.received` webhook is enabled for the configured inbox, using an inbox-scoped key with message read/send and webhook read/create permissions. Set `AGENTMAIL_WEBHOOK_SECRET` to verify provider signatures. The handler also checks timestamps, sender and thread before applying a response. A separate nine-check production run sent one review email and one actual reply, recorded the exact manual text without issuing a PDF, download URL or receipt, consumed all three decision links, rejected replay, and verified revocation and cleanup. Manual responses also work through the dashboard and signed review page.
-
-For an operator-run SMTP demo, `scripts/demo-email.ts` prepares one existing pending request between the fictional Acme and Globex companies. Set `PUENTE_REVIEW_EMAIL`, `PUENTE_SMTP_HELPER` to the absolute path of your external compatible Gmail helper, and `NEXT_PUBLIC_APP_URL` to the deployed HTTPS origin. The external helper loads its own credentials; those credentials do not belong in this repository or Vercel.
-
-```bash
-# Validate and render only; sends no email and writes no approval tokens:
-node --env-file=.env.local --import tsx scripts/demo-email.ts --request REQUEST_UUID
-# Explicitly send once to the configured reviewer:
-node --env-file=.env.local --import tsx scripts/demo-email.ts --request REQUEST_UUID --send
-```
-
-This optional local transport is not part of a fresh clone's dependencies. It requires a helper exposing `load_env()` and `send_via_smtp(...)`; the script's `--help` lists its settings. It refuses to run on Vercel. Its three signed buttons open the production approval pages, and manual responses use that page. Replies to the standalone SMTP fallback are not processed. An uncertain send remains reserved to prevent duplicate email. This fallback does not configure Supabase Auth signup mail.
-
-## Verification
-
-```bash
-npm run lint
-npm run build
-npm run test:database
-# With the local server running:
-npm run test:api
-# Authenticated Realtime delivery and cross-company isolation:
-node --env-file=.env.local --import tsx scripts/realtime-verify.ts
-# Classification policy, strict date/UUID validation and owner scope:
-node --env-file=.env.local --import tsx scripts/document-policy-verify.ts
-```
-
-`test:api` refuses to run with the three AgentMail variables configured, because broad exception tests can send real review messages. Use a dedicated app instance with outbound mail disabled for that suite; removing variables only from the verifier does not disable mail in a deployed target. To verify one authorized real notification, review and opt into `scripts/agentmail-demo-verify.ts --run` with `.env.local` loaded and `NEXT_PUBLIC_APP_URL` set to the production origin. Optional `PUENTE_SMTP_HELPER` confirms Gmail delivery through read-only IMAP and reports Spam separately.
-
-The separate opt-in `scripts/agentmail-reply-verify.ts --run` triggers one application review notification and sends one manual reply through the configured external helper, then verifies the real AgentMail webhook. It requires the webhook secret and an explicitly authorized recipient.
-
-The database tests verify tenant isolation, private Storage, exact hashes for the 16 seeded PDFs, service-only RPCs, atomic code redemption, approval replay protection and revoked bridges. Additional legitimate uploads and companies do not invalidate the fixture checks. HTTP/MCP tests exercise an actual SDK client, receipts and tamper rejection, human decisions, reciprocal offers, invalid purposes, expiry, injection-shaped IDs and immediate download revocation.
-
-### Live classification and model-driven evidence
-
-Production uses **Claude Opus 5.5 through direct Anthropic**, with the workspace configured and `effort: low`. Two real production uploads passed: a tax-compliance opinion was classified with explicit expiry `2026-12-31` and nonsensitive status; a financial balance sheet was classified as sensitive with no inferred expiry. Both originals remained byte-for-byte identical in private Storage and HTTP delivery, with matching SHA-256 fingerprints and verified Ed25519 receipts. The temporary uploads were removed; the seeded documents remain owner-reviewed.
-
-The actual MCP SDK client separately passed all seven core integration groups. A Claude-driven MCP run completed `exchange_code`, then Anthropic stopped the second model step with `finishReason: content-filter`; a complete model-driven MCP exchange is therefore **not verified**. This does not change the successful classification or SDK results. Earlier Gateway HTTP 403 responses are historical; the current direct-Anthropic classifier has working model access.
-
-## Security boundaries
-
-- Every public-schema table has RLS. Anonymous clients have no table access; browser users have tenant-scoped reads and no direct writes.
-- Durable owner credentials are high-entropy, hashed at rest and scoped to their creator and company, with no scheduled expiration. Revocation blocks that connection and its internal owner-download tickets; active owner membership is rechecked.
-- Counterparty credentials are separately scoped to a company and bridge. One-time codes expire in 15 minutes; bridge tokens last up to 24 hours and never outlive their bridge. Original-download tickets last up to 60 seconds and recheck their own scope. Owner-connection revocation does not revoke bridges or counterparty download tickets.
-- Original files are in a private bucket and are never watermarked, rewritten or replaced by extracted text.
-- Receipt verification accepts caller-supplied data; it does not publish a private document registry. PDF content is untrusted data, not agent instructions.
-- Secrets live in ignored environment files and encrypted server variables. Public test credentials belong only to the synthetic demo.
-
-Puente stores, authorizes and delivers corporate originals. It does not generate contracts or NDAs.
+The former upload endpoints and `/api/download` return HTTP 410. Never send PDF bytes or base64 through MCP. The `/receive` page and local receiver connector perform the actual file transfer.

@@ -1,71 +1,83 @@
 # Puente database contract
 
-All IDs are UUID strings. Timestamps are ISO 8601 timestamptz values; document expiry is a `YYYY-MM-DD` date or null. The server uses the service-role client only after authorization. Dashboard users authenticate through Supabase Auth and can select rows belonging to their company through RLS; browser roles have no direct writes.
+Puente uses PostgreSQL in Supabase project `puente` (`iuhxutsngsmpzjaklzlp`), organization `tuabogadopreferido`, region `us-west-1`. Supabase Auth maintains user identities. The database contains account, catalog, permission and coordination metadata. It contains no original PDFs or extracted document text; the former `documents` Storage bucket and upload-session RPCs have been removed.
 
-| Table | Fields |
-| --- | --- |
-| companies | id, name, tax_id, contact_email, created_at |
-| company_members | user_id (Auth), company_id, role (`owner`), created_at |
-| purposes | id, company_id, name, created_at |
-| documents | id, company_id, title, document_type, expires_at, sensitive, sha256, storage_path, extracted_text, classification_source, created_at |
-| rules | id, company_id, counterparty_id (nullable for any counterparty), document_type, purpose_id, created_at |
-| bridges | id, company_a_id, company_b_id, status (`active`, `revoked`), expires_at, created_at |
-| access_codes | id, code_hash, bridge_id, actor_company_id, expires_at, used_at, created_at |
-| agent_tokens | id, token_hash, bridge_id, actor_company_id, expires_at, created_at |
-| owner_agent_connections | id, user_id, company_id, label, token_hash, created_at, revoked_at (no expiry) |
-| requests | id, bridge_id, requester_company_id, owner_company_id, document_id, purpose_id (nullable), purpose_text, status (`pending`, `approved`, `denied`, `manual`), reason, offered_document_ids (UUID array), manual_response, email_thread_id, email_message_id, created_at, updated_at |
-| access_events | id, company_id (document owner), actor_company_id, bridge_id (nullable for owner self-access), document_id (nullable), action, detail (JSON), created_at |
-| receipts | id, company_id (document owner), receiver_company_id, payload (JSON), signature, public_key, created_at |
-| approval_links | id, token_hash, request_id, action (`approve`, `deny`, `manual`), expires_at, used_at, created_at |
-| invitations | id, token_hash, inviter_company_id, created_by_user_id, invited_email, company_name, purpose_id, offered_document_ids, status (`pending`, `accepted`, `cancelled`), expires_at, accepted_by_user_id, accepted_company_id, bridge_id, accepted_at, created_at |
+All identifiers are UUIDs unless noted. Timestamps are `timestamptz`; document expiration is a `YYYY-MM-DD` date or null. The API resolves ownership from verified credentials before using its server-side service-role client. Browser roles cannot mutate tables directly.
 
-Standard document types: `tax_status`, `tax_compliance`, `incorporation`, `power_of_attorney`, `bank_cover`, `proof_of_address`, `repse`, `representative_id`, `balance_sheet`, `income_statement`, `tax_return`, `other`.
+## Tables
 
-Storage bucket `documents` is private. Object paths use `<company_id>/<document_id>.pdf`; uploaded bytes must remain identical to the original. Browser users receive no Storage policies; original delivery uses a short-lived signed application download ticket. Its endpoint revalidates the bridge and token for counterpart access, or active owner membership for internal owner access, before returning the original bytes.
+| Table                     | Data and constraints                                                                                                                                                                    |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `companies`               | Workspace name, nullable `tax_id`, verified owner contact email.                                                                                                                        |
+| `company_members`         | Auth user, company, owner role; the login flow maintains one private workspace per user.                                                                                                |
+| `email_login_challenges`  | Email, display name, HMAC fingerprints for code and IP, Auth user, state, attempt counter and ten-minute expiry. No plaintext code.                                                     |
+| `human_sessions`          | Supabase Auth session ID and user, fixed creation time plus exactly 30 days, nullable revocation time.                                                                                  |
+| `owner_agent_connections` | User/company, label, SHA-256 credential hash, creation and revocation times. No expiry.                                                                                                 |
+| `purposes`                | A company's closed list of permitted business-purpose IDs and names.                                                                                                                    |
+| `document_sources`        | Company/user, optional durable owner connection or human session, source label and heartbeat deadline. No local path, Drive credential or file contents.                                |
+| `documents`               | Company, title, document type, expiration, sensitivity, SHA-256, size, source ID and opaque source key; classification source; optional batch, sharing override and revision.           |
+| `document_batches`        | Company-scoped name, sharing settings, policy revision and creation time.                                                                                                               |
+| `rules`                   | Company, optional counterparty, document type and purpose for routine automatic approval.                                                                                               |
+| `bridges`                 | Two companies, active/revoked status and deadline no more than 24 hours from creation.                                                                                                  |
+| `access_codes`            | Hashed single-use bridge code, acting company, expiry and consumption time.                                                                                                             |
+| `agent_tokens`            | Hashed counterpart credential, acting company, bridge and expiry capped by the bridge.                                                                                                  |
+| `requests`                | Owner/requester, bridge, document, purpose, captured sharing revision, approval status/reason, optional return offers, manual response and approval-mail identifiers.                   |
+| `receipts`                | Owner/receiver, signed authorization payload, Ed25519 signature and public key.                                                                                                         |
+| `peer_transfers`          | Hashed recipient capability, document/source/receipt IDs, expected hash, recipient authorization scope, five-minute maximum expiry, state and bounded SDP offer/answer. No file chunks. |
+| `access_events`           | Owner/actor, optional bridge/document, action and structured audit detail.                                                                                                              |
+| `approval_links`          | Hashed approval capability, request, action, expiry and consumption time.                                                                                                               |
+| `invitations`             | Hashed invitation capability, inviter, verified recipient email, company/purpose/optional offers, acceptance status and resulting bridge.                                               |
 
-## Service-only atomic RPCs
+The `documents_metadata_only` database constraint requires `storage_path IS NULL`, `extracted_text = ''`, and non-null source ID, source key and byte count. Those two legacy columns remain solely for schema compatibility. A PDF is limited to 20 MiB; Puente no longer parses or classifies the original on its server.
 
-`redeem_access_code(p_code_hash text, p_token_hash text)` consumes one valid code and inserts its 24-hour token in one transaction. It returns `{bridge_id, actor_company_id, expires_at}` or raises an exception for expired, reused, revoked, or malformed credentials. The token deadline cannot exceed the bridge deadline.
+Document types are `tax_status`, `tax_compliance`, `incorporation`, `power_of_attorney`, `bank_cover`, `proof_of_address`, `repse`, `representative_id`, `balance_sheet`, `income_statement`, `tax_return`, and `other`.
 
-`consume_approval_link(p_token_hash text, p_action text, p_create_rule boolean = false, p_manual_response text = null)` locks the request, consumes a matching unexpired link, invalidates its sibling links, updates request status, and returns the request as JSON. Optional rules are added only for valid closed-list purposes and routine, current documents. Every sensitive request still requires its own approval. All RPC EXECUTE privileges are revoked from PUBLIC, anon and authenticated; only service_role can call them.
+## Email login and session boundaries
 
-The API must hash random high-entropy codes, agent tokens and approval tokens with SHA-256 before storing or passing them to an RPC. Browser GET navigation must never consume approval links; the confirmation page submits POST.
+The person supplies a name and email. Supabase generates the one-time email code; Puente sends it through AgentMail and verifies it with Supabase Auth. `reserve_email_login`, `claim_email_login` and `finish_email_login` serialize rate limits, verification attempts and account setup. Verification permits at most six attempts, codes expire after ten minutes, and each challenge can be consumed once.
 
-## Realtime and authorization
+Successful verification creates a private workspace when needed, records the verified email and initializes four business purposes. It then binds `human_sessions` to the verified Auth `session_id`. Refreshing a Supabase access token retains this session ID and cannot extend its fixed 30-day deadline. Server authorization and restrictive RLS policies both require a current, unrevoked human session. Logout revokes that session; it does not revoke durable owner-agent credentials.
 
-`access_events`, `requests` and `bridges` join the `supabase_realtime` publication. Each subscription uses the signed-in owner's Supabase JWT and RLS. Metadata for a counterpart company is visible only when it participates in the owner's bridge; the counterpart's document rows remain inaccessible.
+Human sessions, durable owner credentials and counterpart bridge credentials have independent lifetimes. A `po_` owner credential has no automatic expiry. A `pt_` counterpart credential is limited to its bridge, which lasts at most 24 hours. Owner membership and explicit connection revocation remain prerequisites on every durable-agent operation.
 
-An active bridge permits either company to request from the other, but does not authorize a document automatically. Every agent call verifies the token, bridge status and expiry, requested owner, document ownership, purpose and rules. Revocation stops subsequent server calls and invalidates previously issued application download tickets because every download rechecks the bridge.
+## File sources and transfers
 
-`resolve_access_request(p_request_id uuid, p_owner_company_id uuid, p_action text, p_create_rule boolean = false, p_manual_response text = null, p_token_hash text = null)` provides the same atomic resolution to an authenticated owner (after API ownership verification), or a token holder when a token hash is supplied. Both variants lock the request and invalidate all approval links; a manual response can later be approved or denied by the authenticated owner.
+A browser retains the selected `File` objects while its source tab stays open. The local Node connector retains originals on the owner's computer and stores only paths, hashes and opaque source identifiers in its private local manifest. A synchronized Drive folder can be used through that filesystem. Cloud Drive OAuth is not implemented.
 
-## Owner-agent scope
+`POST /api/sources` registers or resumes a source. `POST /api/sources/documents` registers metadata after the source computes SHA-256 locally. An identical company/hash/size registration reconnects the existing catalog document to the new source without resetting its classification or sharing settings. Changed bytes need a new source key and document version. Source polling refreshes a 45-second presence deadline and returns only authorized transfer offers for that authenticated source.
 
-A signed-in owner will create a named connection from **Connect my agent**. The server returns one random `po_` bearer credential once and stores only its SHA-256 hash in `owner_agent_connections`. The table has RLS and no `anon` or `authenticated` grants. Management routes authenticate the browser's Supabase Auth token and scope metadata and revocation to the creating user and company. MCP bearer credentials cannot create new credentials or revoke another connection.
+An approved request produces an Ed25519 authorization receipt and a random recipient transfer capability. Only its hash is stored. The transfer lasts at most five minutes and never beyond the recipient's current bridge or owner authorization. Its browser link carries the capability in a URL fragment; API calls transmit it in the Authorization header. The response contains metadata and a transfer descriptor, never extracted text or PDF bytes.
 
-Owner credentials have no automatic expiry. Each use resolves the hash, rejects a revoked connection and verifies current owner membership. The same authenticated creator may revoke it through the interface; MCP `revoke_owner_access` revokes only the calling connection. Legacy Supabase Auth bearer access remains supported with its own session expiry.
+The recipient and source exchange bounded SDP through `/api/transfers/{id}` and `/api/sources/{id}`. Ordered WebRTC data channels carry the original directly between peers in 16 KiB chunks. SHA-256 and exact size are verified by the recipient before offering a download or writing the local destination. HTTP endpoints and Supabase Storage never carry those file bytes.
 
-The owner's company scope is independent of counterpart bridge tokens. Revoking an owner connection does not change bridges, access codes, counterpart tokens or their download tickets. Conversely, a bridge's 24-hour expiry or revocation does not expire an owner credential. Caller-supplied company claims never authorize ownership.
+Every coordination check revalidates the source owner credential/session and the recipient's independent authorization. Counterpart transfers additionally validate the receipt's approved request and current sharing revision. The connector rechecks while transferring; a final authorization check is required before completion. Bytes already received cannot be recalled.
 
-Owner self-delivery receipts carry `scope: owner`, the verified user/company IDs, `bridge_id: null` and, for a durable credential, `owner_connection_id`. The separate owner download ticket binds that connection and rechecks membership, connection status and its own 60-second expiry before serving bytes. The `access_events` constraint permits a null bridge only when actor and owner are the same company and the action is `owner_document_delivered` or `owner_pdf_downloaded`.
+`complete_peer_transfer` commits the receiver-reported completion event and signaling cleanup atomically and idempotently. A signed receipt proves what Puente authorized; the completion report is not independent proof that a human read the document. Owner self-access uses `scope: owner` and no bridge. Current owner events include `owner_peer_transfer_authorized` and `peer_document_received`; historical owner event names remain allowed by the audit constraint.
 
-MCP `prepare_document_upload` issues a private signed Storage URL for a fixed path. The agent will PUT the unchanged PDF bytes to that URL, then call `complete_document_upload`. Completion checks owner authorization again after classification and before publishing metadata. The two-hour Storage capability cannot overwrite an original; revocation prevents completion but does not cancel a previously issued staging capability.
+A `pg_cron` job clears expired signaling once per minute, including when the source is disconnected, and deletes transfer rows more than 24 hours past expiry. Receipt and audit records remain. STUN is configured for peer discovery. No TURN service is provisioned by default; some network combinations therefore cannot connect. The Node connector can use privately supplied ICE configuration.
 
-## Owner classification corrections
+## Batch and document sharing
 
-MCP `correct_document_classification` and `PATCH /api/documents/{id}` share one owner-scoped correction function. Both accept a durable owner credential or verified owner Auth JWT, require at least one of `document_type`, `sensitive` or `expires_at`, and reject unknown fields. `expires_at: null` clears the date; omitted fields remain unchanged except that sensitivity follows the effective document type. Financial types are always sensitive, onboarding types always routine, and `other` retains the owner's choice.
+Sharing settings contain `mode` (`rules` or `approval`) and `allowed_purpose_ids`. A null purpose list permits all purposes already in the company's closed list; an empty list permits none. An unknown or missing purpose cannot obtain document access.
 
-The service rechecks active owner membership and connection status immediately before the scoped update. Optimistic type/sensitivity comparison rejects conflicting corrections with 409. Successful correction sets `classification_source: owner_reviewed` and returns six metadata fields. It never changes original bytes, SHA-256, Storage path, title or extracted text. This operation grants no bridge or document-delivery permission.
+A document inherits its batch settings unless it has an explicit override. Unbatched documents use the default rule mode with all company purposes. A per-document override takes precedence over its batch. Rule mode still requires the existing routine-document, sensitivity, expiry, counterparty and purpose checks; approval mode always creates a pending owner decision.
 
-## Company invitations
+`save_document_batch` and `set_document_sharing` serialize changes per company, validate every document/purpose/batch against that company and recheck the owner's durable connection or human session. No original bytes change. Public requests capture the effective revision as `document-revision:batch-or-override:batch-revision`. The unbatched initial value is `0:none:0`.
 
-Invitation tokens are hashed and grant no document access. The `invitations` table has RLS and no browser grants, including no direct owner SELECT because its rows contain token hashes. The authenticated server provides scoped metadata instead.
+Changing effective sharing settings invalidates previously approved requests and their active transfer capabilities. Request creation, approval, polling, delivery and peer authorization enforce the current purpose and revision. The receiver must submit a new request after such a change. Internal owner access remains independent of counterpart sharing policies.
 
-`accept_company_invitation(p_token_hash text, p_user_id uuid)` runs only as service_role. It atomically validates expiry, locks the invitation, checks the authenticated user's confirmed email against the invited email, creates a company/member and four default privacy purposes if needed, and creates a 24-hour bilateral bridge without automatic sharing rules. Replays by the same accepted user are idempotent; other users cannot consume the invitation.
+## Authorization, approvals and invitations
 
-A private `puente_private.confirmed_invitation_email(uuid)` helper reads the verified Auth email. It is the only SECURITY DEFINER helper, has an empty search path and an explicit service-role check, lives outside the exposed schema, and grants execution only to service_role. Public mutation RPCs remain SECURITY INVOKER.
+RLS scopes owner-readable metadata by company and additionally enforces human-session expiry. Credential, challenge, invitation, source, transfer and batch tables have no direct browser grants; authenticated APIs provide scoped results. `access_events`, `requests` and `bridges` participate in Supabase Realtime under those owner policies.
 
+`redeem_access_code` consumes a valid single-use code and inserts its scoped counterpart token in one transaction. `resolve_access_request` and `consume_approval_link` lock requests, consume approval capabilities and invalidate sibling links. GET navigation only inspects an approval; an explicit POST resolves it. Return offers are optional. Sensitive documents still require owner approval, even when routine documents have an automatic rule.
 
-### Private large-file upload sessions
+`accept_company_invitation` validates the invited user's confirmed email, creates or reuses the private workspace, and creates a 24-hour bilateral bridge without automatic sharing rules. Invitation capabilities grant no document access by themselves.
 
-`document_upload_sessions` binds an upload UUID, company, authenticated owner, filename, expected size, immutable private Storage path, two-hour expiry, processing lease and completion state. Browser roles cannot read or mutate it. Service-only `claim_document_upload` and `finish_document_upload` enforce owner membership, serialize processing and publish document metadata atomically. Originals may contain at most 20 MiB and 80 pages. Requests and invitations may contain zero return offers.
+Mutation RPCs execute as `SECURITY INVOKER`, with execution revoked from PUBLIC, anon and authenticated and granted only to the service role. Private, narrowly scoped `SECURITY DEFINER` helpers read verified Auth email/session state or enforce human-session RLS. Their search paths are empty; Auth-reading helpers additionally require the service-role claim.
+
+## Classification metadata
+
+`correct_document_classification` over MCP and `PATCH /api/documents/{id}` use the same owner-scoped function. They accept document type, sensitivity and/or expiration, reject unknown fields, recheck ownership and apply an optimistic type/sensitivity comparison. Financial types remain sensitive; routine onboarding types remain routine. An `other` classification retains the owner's sensitivity choice.
+
+Classification changes do not move the original, alter its SHA-256 or expose document contents. The owning agent will inspect and classify its local original, then update Puente's metadata. Retired upload endpoints and stored-file download endpoints return 410; their old Storage/RPC capability flow is unavailable.
