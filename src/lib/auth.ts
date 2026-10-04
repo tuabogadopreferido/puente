@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { admin } from "./supabase-admin";
 import { ApiError, assertDb } from "./http";
 import type { Bridge } from "./types";
+import { verifiedSessionId } from "./email-otp";
 export function sha256(value: string | Buffer | Uint8Array) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -11,18 +12,47 @@ export function bearer(request: Request) {
     throw new ApiError(401, "A bearer token is required", "unauthorized");
   return h.slice(7).trim();
 }
-export async function requireOwner(request: Request) {
-  const { data, error } = await admin().auth.getUser(bearer(request));
+export async function requireHumanSession(request: Request) {
+  const token = bearer(request);
+  const { data, error } = await admin().auth.getUser(token);
   if (error || !data.user)
     throw new ApiError(401, "Please sign in again", "unauthorized");
+  const sessionId = verifiedSessionId(token);
+  const expiresAt = await recheckHumanSession(data.user.id, sessionId);
+  return { user: data.user, expiresAt, sessionId };
+}
+export async function recheckHumanSession(userId: string, sessionId: string) {
+  const { data: session, error: sessionError } = await admin()
+    .from("human_sessions")
+    .select("expires_at")
+    .eq("session_id", sessionId)
+    .eq("user_id", userId)
+    .is("revoked_at", null)
+    .maybeSingle();
+  assertDb(sessionError);
+  if (!session || Date.parse(session.expires_at) <= Date.now())
+    throw new ApiError(
+      401,
+      "Your 30-day session has ended. Request a new sign-in code.",
+      "session_expired",
+    );
+  return session.expires_at as string;
+}
+export async function requireOwner(request: Request) {
+  const { user, expiresAt, sessionId } = await requireHumanSession(request);
   const { data: member, error: memberError } = await admin()
     .from("company_members")
     .select("company_id")
-    .eq("user_id", data.user.id)
+    .eq("user_id", user.id)
     .single();
   if (memberError || !member)
     throw new ApiError(403, "No company membership", "forbidden");
-  return { userId: data.user.id, companyId: member.company_id as string };
+  return {
+    userId: user.id,
+    companyId: member.company_id as string,
+    humanExpiresAt: expiresAt,
+    humanSessionId: sessionId,
+  };
 }
 export interface AgentContext {
   tokenHash: string;

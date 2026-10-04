@@ -7,7 +7,7 @@ import {
 } from "node:crypto";
 import { z } from "zod";
 import { admin } from "@/lib/supabase-admin";
-import { bearer } from "@/lib/auth";
+import { requireHumanSession } from "@/lib/auth";
 import { ApiError, assertDb } from "@/lib/http";
 
 export const invitationInput = z.object({
@@ -98,13 +98,6 @@ async function sendInvitation(
   purposeName: string,
   url: string,
 ) {
-  const reviewer = process.env.PUENTE_REVIEW_EMAIL?.trim().toLowerCase();
-  if (email !== reviewer)
-    return {
-      status: "not_sent",
-      message:
-        "Demo mail is restricted to the configured reviewer. You can copy and share this invitation link with its intended recipient.",
-    };
   if (!process.env.AGENTMAIL_API_KEY || !process.env.AGENTMAIL_INBOX_ID)
     return {
       status: "not_sent",
@@ -127,12 +120,13 @@ async function sendInvitation(
           html: `<div style="font-family:Arial,sans-serif;max-width:580px;margin:auto;padding:28px;color:#183b30"><p>PUENTE · COMPANY INVITATION</p><h1 style="font-size:27px">${htmlEscape(inviterName)} invited your company.</h1><p>${htmlEscape(companyName)} will connect for: ${htmlEscape(purposeName)}.</p><p><a href="${url}" style="display:inline-block;background:#14583f;color:white;padding:15px 20px;border-radius:8px;text-decoration:none">Review invitation</a></p><p>You will sign in with the invited email and confirm that mailbox before accepting. The link expires in 24 hours. Document requests will remain subject to owner permissions.</p></div>`,
         }),
         signal: AbortSignal.timeout(15_000),
+        redirect: "error",
       },
     );
     return response.ok
       ? {
           status: "sent",
-          message: "Invitation sent to the configured demo reviewer.",
+          message: "Invitation sent to its intended recipient.",
         }
       : {
           status: "not_sent",
@@ -255,20 +249,14 @@ export async function inspectInvitation(token: string) {
 }
 export async function acceptInvitation(request: Request, token: string) {
   const row = await invitationRow(token);
-  const { data, error } = await admin().auth.getUser(bearer(request));
-  if (error || !data.user)
-    throw new ApiError(
-      401,
-      "Sign in with the invited email address",
-      "unauthorized",
-    );
-  if (!data.user.email_confirmed_at)
+  const { user } = await requireHumanSession(request);
+  if (!user.email_confirmed_at)
     throw new ApiError(
       403,
       "Confirm your email address before accepting this invitation",
       "email_unconfirmed",
     );
-  if (data.user.email?.trim().toLowerCase() !== row.invited_email)
+  if (user.email?.trim().toLowerCase() !== row.invited_email)
     throw new ApiError(
       403,
       "This invitation is for a different email address",
@@ -276,7 +264,7 @@ export async function acceptInvitation(request: Request, token: string) {
     );
   const { data: accepted, error: acceptanceError } = await admin().rpc(
     "accept_company_invitation",
-    { p_token_hash: hash(token), p_user_id: data.user.id },
+    { p_token_hash: hash(token), p_user_id: user.id },
   );
   if (acceptanceError)
     throw new ApiError(
