@@ -51,6 +51,12 @@ Owner self-delivery receipts carry `scope: owner`, the verified user/company IDs
 
 MCP `prepare_document_upload` issues a private signed Storage URL for a fixed path. The agent will PUT the unchanged PDF bytes to that URL, then call `complete_document_upload`. Completion checks owner authorization again after classification and before publishing metadata. The two-hour Storage capability cannot overwrite an original; revocation prevents completion but does not cancel a previously issued staging capability.
 
+## Owner classification corrections
+
+MCP `correct_document_classification` and `PATCH /api/documents/{id}` share one owner-scoped correction function. Both accept a durable owner credential or verified owner Auth JWT, require at least one of `document_type`, `sensitive` or `expires_at`, and reject unknown fields. `expires_at: null` clears the date; omitted fields remain unchanged except that sensitivity follows the effective document type. Financial types are always sensitive, onboarding types always routine, and `other` retains the owner's choice.
+
+The service rechecks active owner membership and connection status immediately before the scoped update. Optimistic type/sensitivity comparison rejects conflicting corrections with 409. Successful correction sets `classification_source: owner_reviewed` and returns six metadata fields. It never changes original bytes, SHA-256, Storage path, title or extracted text. This operation grants no bridge or document-delivery permission.
+
 ## Company invitations
 
 Invitation tokens are hashed and grant no document access. The `invitations` table has RLS and no browser grants, including no direct owner SELECT because its rows contain token hashes. The authenticated server provides scoped metadata instead.
