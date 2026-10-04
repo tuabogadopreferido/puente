@@ -242,30 +242,26 @@ async function main() {
     await assertRequestSharing(oldRequest);
     must(
       !(
-        await db
-          .from("bridges")
-          .insert({
-            id: bridgeId,
-            company_a_id: company,
-            company_b_id: foreign,
-            expires_at: new Date(Date.now() + 3600_000).toISOString(),
-          })
+        await db.from("bridges").insert({
+          id: bridgeId,
+          company_a_id: company,
+          company_b_id: foreign,
+          expires_at: new Date(Date.now() + 3600_000).toISOString(),
+        })
       ).error,
       "Bridge fixture unavailable",
     );
     must(
       !(
-        await db
-          .from("requests")
-          .insert({
-            ...oldRequest,
-            id: requestId,
-            bridge_id: bridgeId,
-            requester_company_id: foreign,
-            purpose_text: "Purpose 0",
-            status: "pending",
-            reason: "Sharing guard fixture",
-          })
+        await db.from("requests").insert({
+          ...oldRequest,
+          id: requestId,
+          bridge_id: bridgeId,
+          requester_company_id: foreign,
+          purpose_text: "Purpose 0",
+          status: "pending",
+          reason: "Sharing guard fixture",
+        })
       ).error,
       "Request fixture unavailable",
     );
@@ -288,6 +284,42 @@ async function main() {
     await denied(() => assertRequestSharing(oldRequest), 409);
     pass(
       "Changed settings block owner approval; restoring them never revives an older request",
+    );
+    const beforeClassification = await getDocumentSharing(company, docIds[0]);
+    const previousClassificationRequest = {
+      ...oldRequest,
+      sharing_revision: beforeClassification.revision,
+    };
+    must(
+      !(
+        await db
+          .from("documents")
+          .update({ document_type: "balance_sheet", sensitive: true })
+          .eq("id", docIds[0])
+      ).error,
+      "Could not change classification",
+    );
+    await denied(
+      () => assertRequestSharing(previousClassificationRequest),
+      409,
+    );
+    const afterClassification = await getDocumentSharing(company, docIds[0]);
+    must(
+      !(
+        await db
+          .from("documents")
+          .update({ document_type: "balance_sheet", sensitive: true })
+          .eq("id", docIds[0])
+      ).error,
+      "Could not replay classification",
+    );
+    must(
+      (await getDocumentSharing(company, docIds[0])).revision ===
+        afterClassification.revision,
+      "Unchanged classification unexpectedly invalidated requests",
+    );
+    pass(
+      "A financial reclassification invalidates older approvals; identical metadata does not bump revision",
     );
     const malformed = await db.rpc("save_document_batch", {
       p_company_id: company,

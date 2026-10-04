@@ -8,11 +8,15 @@ Current architecture: passwordless accounts, metadata-only catalog and direct We
 - Real AgentMail transport: a code sent to the project's own inbox was retrieved from its sent message and successfully verified. This confirms sender acceptance and the code flow; delivery to a separate external inbox has not been asserted.
 - Direct transfers: 11 local integration groups pass against the live metadata database. Owner and counterpart receivers each receive 20 MiB with matching SHA-256. Bad secrets, foreign tenants, premature acknowledgement, revoked access, offline sources and changed document sharing settings are rejected. Duplicate completion frames and acknowledgements do not create duplicate receipt events.
 - Native browser: a synthetic PDF was received from a second browser tab with SHA-256 verification. No PDF bytes were uploaded to the application or Storage. The saved PDF in the local Downloads directory had the exact original SHA-256.
-- Batch settings: 8 integration groups pass, including inheritance, overrides, purpose restrictions, cross-tenant rejection, stale approvals and revoked owner access. Native UI creation with document selection succeeded.
+- Batch settings: 9 integration groups pass, including inheritance, overrides, purpose restrictions, cross-tenant rejection, stale approvals and revoked owner access. Native UI creation with document selection succeeded.
 - Cleanup removed the old 17 originals, demo companies and demo Auth users. The Storage bucket was removed. Test harnesses delete their fixtures.
 - Expired peer signaling is cleared by the database cleanup job. Peer-transfer completion is atomic and clears signaling once acknowledged. A receipt records authorization; the subsequent receiver event records reported completion.
 
-Production verification of this replacement is recorded after deployment below. Browser-to-browser transfer needs the source online. There is no hosted TURN relay and no cloud-only Drive OAuth integration; synchronized Drive folders work through the local connector.
+Production deployment `puente-pj6bhxsqw` at application commit `7440d79` passed all 11 direct-transfer groups. The real MCP SDK passed five more groups against production: four batch tools, bearer/header handling, counterparty rejection, foreign document isolation, and revocation. The browser signed in on the production domain using the code sent by AgentMail, showed Create account and email-only Sign in, and opened the new dashboard. OpenAPI returned 35 paths with the production origin. Both local and Vercel production builds, TypeScript and ESLint passed.
+
+Security advisors returned ten informational entries for intentionally service-only tables with RLS and no browser grants. The remaining leaked-password warning does not cover this passwordless flow; native password sign-in cannot obtain a Puente human-session allowlist entry. No password route is exposed by the application.
+
+ Browser-to-browser transfer needs the source online. There is no hosted TURN relay and no cloud-only Drive OAuth integration; synchronized Drive folders work through the local connector.
 
 ## Historical prototype evidence
 
