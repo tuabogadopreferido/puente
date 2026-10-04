@@ -30,9 +30,8 @@ function emailAddress(value: string) {
 }
 export async function POST(request: Request) {
   const secret = process.env.AGENTMAIL_WEBHOOK_SECRET;
-  const reviewer = process.env.PUENTE_REVIEW_EMAIL;
   const inbox = process.env.AGENTMAIL_INBOX_ID;
-  if (!secret || !reviewer || !inbox)
+  if (!secret || !inbox)
     return Response.json(
       { error: "Email reply handling is not configured." },
       { status: 503 },
@@ -59,16 +58,12 @@ export async function POST(request: Request) {
   const event = received.safeParse(payload);
   if (!event.success) return new Response(null, { status: 204 });
   const message = event.data.message;
-  if (
-    message.inbox_id !== inbox ||
-    unsafeLabels(message.labels) ||
-    emailAddress(message.from) !== reviewer.trim().toLowerCase()
-  )
+  if (message.inbox_id !== inbox || unsafeLabels(message.labels))
     return new Response(null, { status: 204 });
   const db = admin();
   const { data: pending, error } = await db
     .from("requests")
-    .select("id,email_message_id,status")
+    .select("id,email_message_id,status,owner_company_id")
     .eq("email_thread_id", message.thread_id)
     .eq("status", "pending")
     .maybeSingle();
@@ -79,6 +74,15 @@ export async function POST(request: Request) {
     (message.in_reply_to !== pending.email_message_id &&
       !message.references?.includes(pending.email_message_id))
   )
+    return new Response(null, { status: 204 });
+  const { data: owner, error: ownerError } = await db
+    .from("companies")
+    .select("contact_email")
+    .eq("id", pending.owner_company_id)
+    .single();
+  if (ownerError) return new Response(null, { status: 503 });
+  const reviewer = owner?.contact_email?.trim().toLowerCase();
+  if (!reviewer || emailAddress(message.from) !== reviewer)
     return new Response(null, { status: 204 });
   // Manual replies are data, never instructions to run tools or implicitly approve access.
   let content = message.extracted_text || message.text;

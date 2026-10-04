@@ -1,27 +1,11 @@
-import { requireOwner } from "@/lib/auth";
-import { ApiError, fail, json } from "@/lib/http";
-import {
-  completeDocumentUpload,
-  readUploadJson,
-  uploadCompleteSchema,
-} from "@/lib/document-upload";
-import { ZodError } from "zod";
-export const runtime = "nodejs";
-export const maxDuration = 120;
-export async function POST(request: Request) {
-  try {
-    const owner = await requireOwner(request);
-    const input = uploadCompleteSchema.parse(await readUploadJson(request));
-    return json(await completeDocumentUpload(owner, input.uploadId));
-  } catch (error) {
-    if (error instanceof ApiError || error instanceof ZodError)
-      return fail(error);
-    return json(
-      {
-        error: "Upload processing is temporarily unavailable. Please retry.",
-        code: "upload_unavailable",
-      },
-      503,
-    );
-  }
+/** Retired: Puente coordinates sources and never stores PDF bodies. */
+export async function POST() {
+  return Response.json(
+    {
+      error: "File storage has been removed. Connect your agent and register the file at its source.",
+      code: "storage_removed",
+      guide: "/llms.txt",
+    },
+    { status: 410, headers: { "Cache-Control": "no-store" } },
+  );
 }

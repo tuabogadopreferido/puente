@@ -60,18 +60,17 @@ export function renderApprovalEmail(input: ApprovalEmailContent) {
   return { subject, text, html };
 }
 
-/** Demo mail can only reach the recipient explicitly configured by the owner. */
+/** Requests are sent to the verified contact of the company that owns the document. */
 export async function notifyRequest(
   request: DocumentRequest,
 ): Promise<NotificationResult> {
   const key = process.env.AGENTMAIL_API_KEY;
   const inbox = process.env.AGENTMAIL_INBOX_ID;
-  const recipient = z.email().safeParse(process.env.PUENTE_REVIEW_EMAIL);
-  if (!key || !inbox || !recipient.success)
+  if (!key || !inbox)
     return {
       status: "unavailable",
       message:
-        "Email approval needs AgentMail configuration and an authorized demo reviewer. The owner can review this request in the dashboard.",
+        "Email approval needs AgentMail configuration. The owner can review this request in the dashboard.",
     };
   if (request.status !== "pending")
     return {
@@ -120,12 +119,14 @@ export async function notifyRequest(
         .single(),
       db
         .from("companies")
-        .select("name")
+        .select("name,contact_email")
         .eq("id", request.owner_company_id)
         .single(),
     ]);
     if (!document.data || !requester.data || !owner.data)
       throw new Error("Request details unavailable.");
+    const recipient = z.email().safeParse(owner.data.contact_email);
+    if (!recipient.success) throw new Error("Owner contact unavailable.");
     // One database claim protects concurrent callers and the provider's 24-hour replay window.
     const { data: claimedRequest, error: claimError } = await db
       .from("requests")
@@ -196,7 +197,7 @@ export async function notifyRequest(
       status: "sent",
       message: error
         ? "Approval email sent. Reply tracking could not be saved; use its review links."
-        : "Approval email sent to the configured reviewer.",
+        : "Approval email sent to the document owner's verified address.",
     };
   } catch {
     // A timeout can happen after delivery. Never resend automatically after any network attempt.

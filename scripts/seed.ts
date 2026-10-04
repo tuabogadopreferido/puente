@@ -6,6 +6,10 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const secret = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const password = process.env.PUENTE_DEMO_PASSWORD;
+if (url && !["localhost", "127.0.0.1"].includes(new URL(url).hostname))
+  throw new Error(
+    "Legacy storage fixtures are restricted to a disposable local Supabase instance. Production is a source-only MVP.",
+  );
 if (!url || !secret || !password)
   throw new Error(
     "Set Supabase URL, service role, and PUENTE_DEMO_PASSWORD. Run node --env-file=.env.local --import tsx scripts/seed.ts",
@@ -232,14 +236,12 @@ async function main() {
   for (const company of companies) {
     assertOk(
       (
-        await supabase
-          .from("companies")
-          .upsert({
-            id: company.id,
-            name: company.name,
-            tax_id: company.tax_id,
-            contact_email: company.contact_email,
-          })
+        await supabase.from("companies").upsert({
+          id: company.id,
+          name: company.name,
+          tax_id: company.tax_id,
+          contact_email: company.contact_email,
+        })
       ).error,
       "Company",
     );
@@ -266,15 +268,13 @@ async function main() {
   }
   assertOk(
     (
-      await supabase
-        .from("bridges")
-        .upsert({
-          id: DEMO.bridge,
-          company_a_id: DEMO.acme,
-          company_b_id: DEMO.globex,
-          status: "active",
-          expires_at: "2026-11-03T00:00:00Z",
-        })
+      await supabase.from("bridges").upsert({
+        id: DEMO.bridge,
+        company_a_id: DEMO.acme,
+        company_b_id: DEMO.globex,
+        status: "active",
+        expires_at: "2026-11-03T00:00:00Z",
+      })
     ).error,
     "Demo bridge",
   );
@@ -283,13 +283,11 @@ async function main() {
     for (const [purposeIndex, name] of purposes.entries()) {
       assertOk(
         (
-          await supabase
-            .from("purposes")
-            .upsert({
-              id: fixedId("aaaa", companyIndex, purposeIndex),
-              company_id: company.id,
-              name,
-            })
+          await supabase.from("purposes").upsert({
+            id: fixedId("aaaa", companyIndex, purposeIndex),
+            company_id: company.id,
+            name,
+          })
         ).error,
         "Purpose",
       );
@@ -301,31 +299,27 @@ async function main() {
       const path = `${company.id}/${id}.pdf`;
       assertOk(
         (
-          await supabase.storage
-            .from("documents")
-            .upload(path, bytes, {
-              contentType: "application/pdf",
-              upsert: true,
-            })
+          await supabase.storage.from("documents").upload(path, bytes, {
+            contentType: "application/pdf",
+            upsert: true,
+          })
         ).error,
         "Upload synthetic PDF",
       );
       assertOk(
         (
-          await supabase
-            .from("documents")
-            .upsert({
-              id,
-              company_id: company.id,
-              title: fixture.title,
-              document_type: fixture.type,
-              expires_at: fixture.expiry,
-              sensitive: fixture.sensitive,
-              sha256: hash,
-              storage_path: path,
-              extracted_text: text,
-              classification_source: "owner_verified_demo_fixture",
-            })
+          await supabase.from("documents").upsert({
+            id,
+            company_id: company.id,
+            title: fixture.title,
+            document_type: fixture.type,
+            expires_at: fixture.expiry,
+            sensitive: fixture.sensitive,
+            sha256: hash,
+            storage_path: path,
+            extracted_text: text,
+            classification_source: "owner_verified_demo_fixture",
+          })
         ).error,
         "Document metadata",
       );
@@ -342,15 +336,13 @@ async function main() {
     ].entries()) {
       assertOk(
         (
-          await supabase
-            .from("rules")
-            .upsert({
-              id: fixedId("eeee", companyIndex, ruleIndex),
-              company_id: company.id,
-              counterparty_id: companyIndex === 0 ? DEMO.globex : DEMO.acme,
-              document_type: type,
-              purpose_id: fixedId("aaaa", companyIndex, 0),
-            })
+          await supabase.from("rules").upsert({
+            id: fixedId("eeee", companyIndex, ruleIndex),
+            company_id: company.id,
+            counterparty_id: companyIndex === 0 ? DEMO.globex : DEMO.acme,
+            document_type: type,
+            purpose_id: fixedId("aaaa", companyIndex, 0),
+          })
         ).error,
         "Preapproved rule",
       );
